@@ -168,3 +168,72 @@ Example codes:
 - `missing_stock_id`
 - `confirmation_required`
 
+## 5. Temporary Phase A debug routes
+
+These routes are temporary backend debug helpers for Pitix F&B connectivity checks.
+
+`GET /pitix/health`
+
+Response body:
+
+```json
+{
+  "ok": true,
+  "service": "ai-orchestrator-pitix",
+  "pitix": {
+    "accountGraphqlUrl": "https://api-ext.pitix.app/account",
+    "posGraphqlUrl": "https://api-ext.pitix.app/pos",
+    "requestTimeoutMs": 15000,
+    "debugLogs": false
+  }
+}
+```
+
+`POST /pitix/test-account`
+
+Request body for OTA verification:
+
+```json
+{
+  "requestId": "ota_request_id"
+}
+```
+
+Request body for refresh:
+
+```json
+{
+  "refreshToken": "pitix_refresh_token"
+}
+```
+
+`POST /pitix/test-pos-read`
+
+Request body:
+
+```json
+{
+  "token": "pitix_access_token",
+  "businessId": "pitix_business_id",
+  "userId": "pitix_user_id",
+  "storeId": "optional_store_id",
+  "productLimit": 20
+}
+```
+
+Response body:
+
+```json
+{
+  "ok": true,
+  "business": {
+    "id": "biz_1",
+    "name": "Demo Shop",
+    "defaultStoreId": "store_1"
+  },
+  "selectedStoreId": "store_1",
+  "saleChannelsCount": 3,
+  "paymentMethodsCount": 4,
+  "productsCount": 20
+}
+```

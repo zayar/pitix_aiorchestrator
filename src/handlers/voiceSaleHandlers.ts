@@ -17,7 +17,11 @@ const readAccessToken = (req: RequestWithContext): string =>
 const buildVoiceContext = (req: RequestWithContext): VoiceSaleRequestContext => {
   const businessId = String(req.body?.businessId ?? "").trim();
   const userId = String(req.body?.userId ?? "").trim();
-  const accessToken = readAccessToken(req);
+  const token = readAccessToken(req);
+  const saleChannelName =
+    typeof req.body?.saleChannel === "string"
+      ? String(req.body.saleChannel).trim()
+      : String(req.body?.saleChannel?.name ?? "").trim();
 
   if (!businessId || !userId) {
     throw new AppError("businessId and userId are required.", {
@@ -25,7 +29,7 @@ const buildVoiceContext = (req: RequestWithContext): VoiceSaleRequestContext => 
       code: "missing_context",
     });
   }
-  if (!accessToken) {
+  if (!token) {
     throw new AppError("PitiX access token is required in the Authorization header.", {
       statusCode: 401,
       code: "missing_access_token",
@@ -36,9 +40,11 @@ const buildVoiceContext = (req: RequestWithContext): VoiceSaleRequestContext => 
     requestId: req.requestId,
     businessId,
     storeId: String(req.body?.storeId ?? "").trim() || undefined,
+    storeName: String(req.body?.storeName ?? "").trim() || undefined,
     userId,
-    accessToken,
-    saleChannelName: String(req.body?.saleChannel ?? "").trim() || undefined,
+    userName: String(req.body?.userName ?? "").trim() || undefined,
+    token,
+    saleChannel: saleChannelName ? { name: saleChannelName } : undefined,
   };
 };
 
@@ -176,4 +182,3 @@ export const handleCreate = async (req: RequestWithContext, res: Response) => {
   const response = await pitixBackendAdapter.createSale(context, body);
   res.json(response);
 };
-
