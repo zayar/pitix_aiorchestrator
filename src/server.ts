@@ -19,6 +19,7 @@ export const createServer = () => {
       ok: true,
       service: "ai-orchestrator-pitix",
       scope: "pitix",
+      buildTag: "deploy-test-20260314-1",
     });
   });
 
