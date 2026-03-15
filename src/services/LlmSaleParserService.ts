@@ -12,6 +12,7 @@ import { parseJsonObject } from "../utils/json.js";
 import { findBestEntityMatchByName } from "../utils/matching.js";
 import {
   extractCustomerHint,
+  extractVoiceLineCandidates,
   normalizeVoiceText,
   parseSpokenQuantity,
   removeQuantityWords,
@@ -39,6 +40,8 @@ export interface LlmSaleParserService {
 
 const clampConfidence = (value: number): number => Math.max(0, Math.min(1, value));
 
+const uniqueNames = (values: string[]): string[] => Array.from(new Set(values.filter(Boolean)));
+
 const buildMatchedCustomer = (
   customerName: string,
   customers: CatalogSnapshot["customers"],
@@ -52,6 +55,17 @@ const buildMatchedCustomer = (
     confidence: clampConfidence(match.confidence),
     matchedText: customerName,
   };
+};
+
+const buildCustomerSuggestions = (
+  customerName: string,
+  customers: CatalogSnapshot["customers"],
+): string[] => {
+  const match = findBestEntityMatchByName(customerName, customers);
+  if (match.match && !match.ambiguous) {
+    return [];
+  }
+  return uniqueNames(match.suggestions).slice(0, 3);
 };
 
 const buildMatchedProduct = (
@@ -70,6 +84,17 @@ const buildMatchedProduct = (
     trackInventory: match.match.trackInventory,
     matchedText: phrase,
   };
+};
+
+const buildProductSuggestions = (
+  phrase: string,
+  products: CatalogSnapshot["products"],
+): string[] => {
+  const match = findBestEntityMatchByName(phrase, products);
+  if (match.match && !match.ambiguous) {
+    return [];
+  }
+  return uniqueNames(match.suggestions).slice(0, 3);
 };
 
 const toDraftItem = (
@@ -120,6 +145,12 @@ const buildDraftFromPhrases = (params: {
     .map((item) => item.rawText);
   const subtotal = items.reduce((sum, item) => sum + item.lineTotal, 0);
   const warnings = items.flatMap((item) => item.warnings);
+  const customerSuggestions = !customer && params.customerPhrase
+    ? buildCustomerSuggestions(params.customerPhrase, params.catalog.customers)
+    : [];
+  const productSuggestions = uniqueNames(
+    unmatchedPhrases.flatMap((phrase) => buildProductSuggestions(phrase, params.catalog.products)),
+  ).slice(0, 5);
 
   if (!customer && params.customerPhrase) {
     warnings.push("Customer could not be matched confidently.");
@@ -129,6 +160,12 @@ const buildDraftFromPhrases = (params: {
   }
   if (unmatchedPhrases.length > 0) {
     warnings.push("Some item phrases need manual confirmation.");
+  }
+  if (!customer && customerSuggestions.length > 0) {
+    warnings.push(`Suggested customers: ${customerSuggestions.join(", ")}`);
+  }
+  if (unmatchedPhrases.length > 0 && productSuggestions.length > 0) {
+    warnings.push(`Suggested products: ${productSuggestions.join(", ")}`);
   }
 
   const matchedCount = items.filter((item) => item.product).length + (customer ? 1 : 0);
@@ -268,13 +305,22 @@ class HybridSaleParserService implements LlmSaleParserService {
 
   private parseHeuristically(requestId: string, transcript: string, catalog: CatalogSnapshot): ParsedSaleDraft {
     const customerPhrase = extractCustomerHint(transcript);
-    const itemPhrases = splitItemSegments(transcript).map((segment) => {
-      const quantity = parseSpokenQuantity(segment) ?? 1;
-      return {
-        phrase: removeQuantityWords(segment) || normalizeVoiceText(segment),
-        quantity,
-      };
-    });
+    const extractedLines = extractVoiceLineCandidates(transcript);
+    const itemPhrases =
+      extractedLines.length > 0
+        ? extractedLines
+            .map((line) => ({
+              phrase: String(line.name ?? "").trim(),
+              quantity: line.quantity ?? parseSpokenQuantity(line.quantityRaw) ?? 1,
+            }))
+            .filter((line) => line.phrase)
+        : splitItemSegments(transcript).map((segment) => {
+            const quantity = parseSpokenQuantity(segment) ?? 1;
+            return {
+              phrase: removeQuantityWords(segment) || normalizeVoiceText(segment),
+              quantity,
+            };
+          });
 
     return buildDraftFromPhrases({
       requestId,
