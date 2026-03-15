@@ -21,6 +21,7 @@ const readToken = (value: unknown): string =>
 const buildSession = (req: RequestWithContext): PitiXSession => {
   const body = (req.body ?? {}) as Partial<TestPosReadRequestBody> & Record<string, unknown>;
   const token = readToken(body.token ?? req.headers.authorization);
+  const refreshToken = String(body.refreshToken ?? "").trim() || undefined;
   const businessId = String(body.businessId ?? "").trim();
   const userId = String(body.userId ?? "").trim();
   const storeId = String(body.storeId ?? "").trim() || undefined;
@@ -43,6 +44,7 @@ const buildSession = (req: RequestWithContext): PitiXSession => {
 
   return {
     token,
+    refreshToken,
     businessId,
     userId,
     storeId,
@@ -126,6 +128,7 @@ pitixDebugRouter.post("/test-pos-read", (req, res, next) => {
         businessId: session.businessId,
         userId: session.userId,
         storeId: session.storeId ?? null,
+        hasRefreshToken: Boolean(session.refreshToken),
         result: business
           ? {
               found: true,
@@ -148,6 +151,7 @@ pitixDebugRouter.post("/test-pos-read", (req, res, next) => {
           businessId: session.businessId,
           userId: session.userId,
           storeId: session.storeId ?? null,
+          hasRefreshToken: Boolean(session.refreshToken),
           error: {
             code: error.code,
             message: error.message,

@@ -100,6 +100,7 @@ export type TestAccountRequestBody = {
 
 export type TestPosReadRequestBody = {
   token?: string;
+  refreshToken?: string;
   businessId: string;
   userId: string;
   storeId?: string;

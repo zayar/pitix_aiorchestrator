@@ -214,10 +214,22 @@ Request body:
 ```json
 {
   "token": "pitix_access_token",
+  "refreshToken": "optional_pitix_refresh_token",
   "businessId": "pitix_business_id",
   "userId": "pitix_user_id",
-  "storeId": "optional_store_id",
-  "productLimit": 20
+  "storeId": "optional_store_id"
+}
+```
+
+Live FNB connectivity example:
+
+```json
+{
+  "businessId": "cma0u7rj50002xs6fzhw9il57",
+  "userId": "cma0u7rhc0002fuljojapui93",
+  "storeId": "cmaawvak10019xjxnp970rcbi",
+  "token": "REAL_ACCESS_TOKEN",
+  "refreshToken": "REAL_REFRESH_TOKEN"
 }
 ```
 
@@ -226,14 +238,19 @@ Response body:
 ```json
 {
   "ok": true,
-  "business": {
-    "id": "biz_1",
-    "name": "Demo Shop",
-    "defaultStoreId": "store_1"
-  },
-  "selectedStoreId": "store_1",
-  "saleChannelsCount": 3,
-  "paymentMethodsCount": 4,
-  "productsCount": 20
+  "endpoint": "https://api.pitix.app/pos",
+  "operationName": "BusinessPing",
+  "elapsedMs": 123,
+  "businessId": "biz_1",
+  "userId": "user_1",
+  "storeId": "store_1",
+  "hasRefreshToken": true,
+  "result": {
+    "found": true,
+    "business": {
+      "id": "biz_1",
+      "name": "Demo Shop"
+    }
+  }
 }
 ```
