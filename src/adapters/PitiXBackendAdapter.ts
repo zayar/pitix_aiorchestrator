@@ -717,9 +717,6 @@ export class PitiXBackendAdapter {
           business_id: {
             equals: session.businessId,
           },
-          active: {
-            equals: true,
-          },
         },
         take: 100,
         skip: 0,
