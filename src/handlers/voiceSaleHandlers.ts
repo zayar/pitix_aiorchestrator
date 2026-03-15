@@ -1,5 +1,10 @@
 import type { Response } from "express";
-import type { CreateSaleRequestBody, VoiceSaleProcessResponse, VoiceSaleRequestContext } from "../types/contracts.js";
+import type {
+  CatalogSnapshot,
+  CreateSaleRequestBody,
+  VoiceSaleProcessResponse,
+  VoiceSaleRequestContext,
+} from "../types/contracts.js";
 import type { RequestWithContext } from "../middleware/requestContext.js";
 import { AppError } from "../utils/errors.js";
 import { config } from "../config/index.js";
@@ -70,6 +75,126 @@ const parseStringList = (value: unknown): string[] => {
     .filter(Boolean);
 };
 
+const parseJsonValue = (value: unknown): unknown => {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(trimmed);
+  } catch (_error) {
+    return value;
+  }
+};
+
+const readClientBiasPhrases = (req: RequestWithContext): string[] =>
+  parseStringList(parseJsonValue(req.body?.biasPhrases));
+
+const readClientCatalogSnapshot = (req: RequestWithContext): CatalogSnapshot | null => {
+  const parsed = parseJsonValue(req.body?.catalogSnapshot);
+  if (!parsed || typeof parsed !== "object") {
+    return null;
+  }
+
+  const source = parsed as Record<string, unknown>;
+  const customers = Array.isArray(source.customers)
+    ? source.customers.reduce<CatalogSnapshot["customers"]>((acc, row) => {
+        if (!row || typeof row !== "object") {
+          return acc;
+        }
+        const value = row as Record<string, unknown>;
+        const id = String(value.id ?? "").trim();
+        const name = String(value.name ?? "").trim();
+        if (!id || !name) {
+          return acc;
+        }
+
+        acc.push({
+          id,
+          name,
+          identifier: String(value.identifier ?? "").trim() || null,
+          phone: String(value.phone ?? "").trim() || null,
+          email: String(value.email ?? "").trim() || null,
+        });
+        return acc;
+      }, [])
+    : [];
+
+  const products = Array.isArray(source.products)
+    ? source.products.reduce<CatalogSnapshot["products"]>((acc, row) => {
+        if (!row || typeof row !== "object") {
+          return acc;
+        }
+        const value = row as Record<string, unknown>;
+        const id = String(value.id ?? "").trim();
+        const name = String(value.name ?? "").trim();
+        if (!id || !name) {
+          return acc;
+        }
+
+        const unitPrice = Number(value.unitPrice ?? 0);
+        const currentStock = Number(value.currentStock ?? 0);
+
+        acc.push({
+          id,
+          name,
+          unitPrice: Number.isFinite(unitPrice) ? unitPrice : 0,
+          stockId: String(value.stockId ?? "").trim() || null,
+          currentStock: Number.isFinite(currentStock) ? currentStock : 0,
+          trackInventory: Boolean(value.trackInventory),
+        });
+        return acc;
+      }, [])
+    : [];
+
+  if (customers.length === 0 && products.length === 0) {
+    return null;
+  }
+
+  const saleChannels = Array.isArray(source.saleChannels)
+    ? source.saleChannels.reduce<CatalogSnapshot["saleChannels"]>((acc, row) => {
+        if (!row || typeof row !== "object") {
+          return acc;
+        }
+        const value = row as Record<string, unknown>;
+        const name = String(value.name ?? "").trim();
+        if (!name) {
+          return acc;
+        }
+
+        acc.push({
+          id: String(value.id ?? "").trim() || undefined,
+          code: String(value.code ?? "").trim() || null,
+          active: typeof value.active === "boolean" ? value.active : undefined,
+          name,
+          isDefault:
+            typeof value.isDefault === "boolean"
+              ? value.isDefault
+              : typeof value.is_default === "boolean"
+                ? value.is_default
+                : undefined,
+          type: String(value.type ?? "").trim() || null,
+          storeId: String(value.storeId ?? value.store_id ?? "").trim() || null,
+          storeName: String(value.storeName ?? value.store_name ?? "").trim() || null,
+        });
+        return acc;
+      }, [])
+    : [];
+
+  return {
+    currencyCode: String(source.currencyCode ?? "MMK").trim() || "MMK",
+    defaultStoreId: String(source.defaultStoreId ?? "").trim() || null,
+    saleChannels,
+    customers,
+    products,
+  };
+};
+
 const readPrimaryLanguage = (req: RequestWithContext): string =>
   String(req.body?.language?.primary ?? req.body?.languagePrimary ?? "my-MM").trim() || "my-MM";
 
@@ -112,6 +237,8 @@ const logVoiceUpload = (req: RequestWithAudio, route: "recognize" | "process", a
     hasUserId: Boolean(String(req.body?.userId ?? "").trim()),
     hasStoreId: Boolean(String(req.body?.storeId ?? "").trim()),
     hasRefreshToken: Boolean(readRefreshToken(req)),
+    hasCatalogSnapshot: Boolean(readClientCatalogSnapshot(req)),
+    clientBiasPhraseCount: readClientBiasPhrases(req).length,
   });
 };
 
@@ -202,16 +329,23 @@ export const handleRecognize = async (req: RequestWithContext, res: Response) =>
   const context = buildVoiceContext(req);
   const primaryLanguage = readPrimaryLanguage(req);
   const additionalLanguages = readAdditionalLanguages(req);
-  let biasPhrases: string[] = [];
+  const requestCatalog = readClientCatalogSnapshot(req);
+  let biasPhrases = readClientBiasPhrases(req);
 
-  try {
-    const catalog = await pitixBackendAdapter.fetchCatalog(context);
-    biasPhrases = buildCatalogBiasPhrases(catalog);
-  } catch (error) {
-    logger.warn("PitiX catalog preload failed before recognize", {
-      requestId: context.requestId,
-      error: error instanceof Error ? error.message : String(error),
-    });
+  if (biasPhrases.length === 0 && requestCatalog) {
+    biasPhrases = buildCatalogBiasPhrases(requestCatalog);
+  }
+
+  if (biasPhrases.length === 0) {
+    try {
+      const catalog = await pitixBackendAdapter.fetchCatalog(context);
+      biasPhrases = buildCatalogBiasPhrases(catalog);
+    } catch (error) {
+      logger.warn("PitiX catalog preload failed before recognize", {
+        requestId: context.requestId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   const recognized = await speechRecognitionService.recognize(
@@ -246,7 +380,7 @@ export const handleParse = async (req: RequestWithContext, res: Response) => {
     throw new AppError("transcript is required.", { statusCode: 400, code: "missing_transcript" });
   }
 
-  const catalog = await pitixBackendAdapter.fetchCatalog(context);
+  const catalog = readClientCatalogSnapshot(req) ?? (await pitixBackendAdapter.fetchCatalog(context));
   const draft = await llmSaleParserService.parse({
     requestId: context.requestId,
     transcript,
@@ -273,8 +407,11 @@ export const handleProcess = async (req: RequestWithContext, res: Response) => {
   const context = buildVoiceContext(req);
   const primaryLanguage = readPrimaryLanguage(req);
   const additionalLanguages = readAdditionalLanguages(req);
-  const catalog = await pitixBackendAdapter.fetchCatalog(context);
-  const biasPhrases = buildCatalogBiasPhrases(catalog);
+  const requestCatalog = readClientCatalogSnapshot(req);
+  const catalog = requestCatalog ?? (await pitixBackendAdapter.fetchCatalog(context));
+  const biasPhrases = readClientBiasPhrases(req).length > 0
+    ? readClientBiasPhrases(req)
+    : buildCatalogBiasPhrases(catalog);
 
   const recognized = await speechRecognitionService.recognize(
     buildSpeechRecognitionInput({
