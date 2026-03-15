@@ -48,9 +48,14 @@ export const config = {
   port: getPositiveNumberEnv("PORT", 8080),
   requestBodyLimit: getStringEnv("REQUEST_BODY_LIMIT", "12mb"),
   logRequestBodies: getBooleanEnv("LOG_REQUEST_BODIES", false),
-  sttProvider: getStringEnv("STT_PROVIDER", "stub"),
+  sttProvider: getStringEnv("STT_PROVIDER", "auto"),
   llmProvider: getStringEnv("LLM_PROVIDER", "heuristic"),
-  gcpProjectId: String(process.env.GCP_PROJECT_ID ?? "").trim(),
+  gcpProjectId: String(
+    process.env.GCP_PROJECT_ID ??
+      process.env.GOOGLE_CLOUD_PROJECT ??
+      process.env.GCLOUD_PROJECT ??
+      "",
+  ).trim(),
   vertexRegion: getStringEnv("VERTEX_REGION", "asia-southeast1"),
   vertexModel: getStringEnv("VERTEX_MODEL", "gemini-2.5-flash"),
   vertexSttModel: getStringEnv("VERTEX_STT_MODEL", String(process.env.VERTEX_MODEL ?? "gemini-2.5-flash")),

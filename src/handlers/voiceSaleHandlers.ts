@@ -2,6 +2,7 @@ import type { Response } from "express";
 import type { CreateSaleRequestBody, VoiceSaleProcessResponse, VoiceSaleRequestContext } from "../types/contracts.js";
 import type { RequestWithContext } from "../middleware/requestContext.js";
 import { AppError } from "../utils/errors.js";
+import { config } from "../config/index.js";
 import { createSpeechRecognitionService } from "../services/SpeechRecognitionService.js";
 import { createLlmSaleParserService } from "../services/LlmSaleParserService.js";
 import { PitiXBackendAdapter } from "../adapters/PitiXBackendAdapter.js";
@@ -28,6 +29,17 @@ type ResolvedAudioPayload = {
   mimeType: string;
   source: "multipart" | "json";
   sizeBytes?: number;
+};
+
+const toSizeBucket = (sizeBytes?: number): string | undefined => {
+  if (!Number.isFinite(sizeBytes)) {
+    return undefined;
+  }
+
+  if ((sizeBytes ?? 0) < 128 * 1024) return "<128kb";
+  if ((sizeBytes ?? 0) < 512 * 1024) return "128-512kb";
+  if ((sizeBytes ?? 0) < 1024 * 1024) return "512kb-1mb";
+  return ">1mb";
 };
 
 const parseStringList = (value: unknown): string[] => {
@@ -81,6 +93,25 @@ const readAudioPayload = (req: RequestWithAudio): ResolvedAudioPayload => {
     mimeType: String(req.body?.audio?.mimeType ?? "audio/m4a").trim() || "audio/m4a",
     source: "json",
   };
+};
+
+const logVoiceUpload = (req: RequestWithAudio, route: "recognize" | "process", audio: ResolvedAudioPayload) => {
+  if (!config.pitixDebugLogs) {
+    return;
+  }
+
+  logger.info("Voice sale audio received", {
+    requestId: req.requestId,
+    route,
+    source: audio.source,
+    hasFile: Boolean(req.file?.buffer?.length),
+    mimeType: audio.mimeType,
+    fileSizeBucket: toSizeBucket(audio.sizeBytes),
+    hasBusinessId: Boolean(String(req.body?.businessId ?? "").trim()),
+    hasUserId: Boolean(String(req.body?.userId ?? "").trim()),
+    hasStoreId: Boolean(String(req.body?.storeId ?? "").trim()),
+    hasRefreshToken: Boolean(readRefreshToken(req)),
+  });
 };
 
 const buildVoiceContext = (req: RequestWithContext): VoiceSaleRequestContext => {
@@ -140,18 +171,12 @@ const buildProcessResponse = (params: {
 });
 
 export const handleRecognize = async (req: RequestWithContext, res: Response) => {
+  const requestWithAudio = req as RequestWithAudio;
+  const audio = readAudioPayload(requestWithAudio);
+  logVoiceUpload(requestWithAudio, "recognize", audio);
   const context = buildVoiceContext(req);
-  const audio = readAudioPayload(req as RequestWithAudio);
   const primaryLanguage = readPrimaryLanguage(req);
   const additionalLanguages = readAdditionalLanguages(req);
-
-  logger.info("Voice sale audio received", {
-    requestId: context.requestId,
-    route: "recognize",
-    source: audio.source,
-    mimeType: audio.mimeType,
-    sizeBytes: audio.sizeBytes,
-  });
 
   const recognized = await speechRecognitionService.recognize({
     requestId: context.requestId,
@@ -203,18 +228,12 @@ export const handleParse = async (req: RequestWithContext, res: Response) => {
 };
 
 export const handleProcess = async (req: RequestWithContext, res: Response) => {
+  const requestWithAudio = req as RequestWithAudio;
+  const audio = readAudioPayload(requestWithAudio);
+  logVoiceUpload(requestWithAudio, "process", audio);
   const context = buildVoiceContext(req);
-  const audio = readAudioPayload(req as RequestWithAudio);
   const primaryLanguage = readPrimaryLanguage(req);
   const additionalLanguages = readAdditionalLanguages(req);
-
-  logger.info("Voice sale audio received", {
-    requestId: context.requestId,
-    route: "process",
-    source: audio.source,
-    mimeType: audio.mimeType,
-    sizeBytes: audio.sizeBytes,
-  });
 
   const recognized = await speechRecognitionService.recognize({
     requestId: context.requestId,

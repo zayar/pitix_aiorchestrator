@@ -12,6 +12,7 @@
     "node": ">=18"
   },
   "dependencies": {
+    "@google/genai": "^1.45.0",
     "@google-cloud/vertexai": "^1.10.0",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
