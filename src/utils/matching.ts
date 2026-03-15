@@ -1,5 +1,14 @@
 import { normalizeVoiceText } from "./voiceText.js";
 
+const RETAIL_ALIAS_GROUPS: string[][] = [
+  ["muffler", "mufflers", "မာဖလာ", "mafalar", "mafla"],
+  ["shoe", "shoes", "ရှူး", "shu", "shue"],
+  ["slipper", "slippers", "ဖိနပ်", "sliper"],
+  ["bag", "bags", "handbag", "purse", "ဘက်", "ဘတ်"],
+  ["tee", "tshirt", "t shirt", "shirt", "တီရှပ်", "ရှပ်"],
+  ["box", "ဘောက်", "ဘောက်စ်"],
+];
+
 const englishPhoneticKey = (value: string): string => {
   const letters = normalizeVoiceText(value).replace(/[^a-z]/g, "");
   if (!letters) return "";
@@ -89,6 +98,42 @@ const normalizeNameForMatching = (value: string): string =>
     .replace(/\s+/g, " ")
     .trim();
 
+const expandAliasVariants = (value: string): string[] => {
+  const normalized = normalizeNameForMatching(value);
+  if (!normalized) {
+    return [];
+  }
+
+  const variants = new Set<string>([normalized, normalized.replace(/\s+/g, "")]);
+  for (const group of RETAIL_ALIAS_GROUPS) {
+    const normalizedGroup = group.map((entry) => normalizeNameForMatching(entry)).filter(Boolean);
+    if (!normalizedGroup.includes(normalized)) {
+      continue;
+    }
+
+    normalizedGroup.forEach((entry) => {
+      variants.add(entry);
+      variants.add(entry.replace(/\s+/g, ""));
+    });
+  }
+
+  return Array.from(variants);
+};
+
+const buildAliasAwareSimilarityScore = (target: string, candidate: string): number => {
+  const targetVariants = expandAliasVariants(target);
+  const candidateVariants = expandAliasVariants(candidate);
+
+  let bestScore = 0;
+  for (const targetVariant of targetVariants) {
+    for (const candidateVariant of candidateVariants) {
+      bestScore = Math.max(bestScore, buildSimilarityScore(targetVariant, candidateVariant));
+    }
+  }
+
+  return bestScore;
+};
+
 export type EntityMatchResult<T> = {
   match: T | null;
   confidence: number;
@@ -110,7 +155,7 @@ export const findBestEntityMatchByName = <T extends { name: string }>(
       const candidate = normalizeNameForMatching(entity.name);
       return {
         entity,
-        score: buildSimilarityScore(target, candidate),
+        score: buildAliasAwareSimilarityScore(target, candidate),
       };
     })
     .sort((left, right) => right.score - left.score);

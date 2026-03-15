@@ -10,6 +10,8 @@ export type SpeechRecognitionInput = {
   mimeType: string;
   primaryLanguage: string;
   additionalLanguages: string[];
+  biasPhrases?: string[];
+  commands?: string[];
   transcriptOverride?: string;
 };
 
@@ -37,6 +39,8 @@ const DEFAULT_PRIMARY_LANGUAGE = "my-MM";
 const DEFAULT_SECONDARY_LANGUAGE = "en-US";
 const DEFAULT_TIMEOUT_MS = 18000;
 const DEFAULT_LOW_CONFIDENCE_THRESHOLD = 0.62;
+const MAX_BIAS_PHRASES = 1200;
+const DEFAULT_COMMANDS = ["add sale", "sale order", "customer", "cash", "take away", "ထည့်", "ရောင်း", "ဖောက်သည်"];
 
 const liveClientLocation =
   String(process.env.VOICE_REALTIME_VERTEX_LOCATION ?? "global").trim() || "global";
@@ -97,6 +101,34 @@ const clampTranscript = (value: string): string => {
   const trimmed = String(value ?? "").trim();
   return trimmed.length <= 1800 ? trimmed : trimmed.slice(0, 1800);
 };
+
+const sanitizePhrases = (phrases: string[]): string[] => {
+  const seen = new Set<string>();
+  const output: string[] = [];
+
+  for (const raw of phrases) {
+    const phrase = String(raw ?? "").trim();
+    if (!phrase) {
+      continue;
+    }
+
+    const key = phrase.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    output.push(phrase);
+    if (output.length >= MAX_BIAS_PHRASES) {
+      break;
+    }
+  }
+
+  return output;
+};
+
+const buildBiasPhraseList = (input: SpeechRecognitionInput): string[] =>
+  sanitizePhrases([...(input.biasPhrases ?? []), ...(input.commands ?? DEFAULT_COMMANDS)]);
 
 const toConfidence = (value: unknown): number | null => {
   if (typeof value === "number") {
@@ -190,6 +222,7 @@ class GeminiSpeechRecognitionService implements SpeechRecognitionService {
     mimeType: string;
     primaryLanguageCode: string;
     additionalLanguageCodes: string[];
+    biasPhrases: string[];
   }): Promise<string> {
     const timeoutMs = Math.max(
       3000,
@@ -240,6 +273,9 @@ class GeminiSpeechRecognitionService implements SpeechRecognitionService {
                     ...params.additionalLanguageCodes,
                   ].join(", ")}`,
                   "Do not translate. Do not summarize. Output faithful transcript text only.",
+                  params.biasPhrases.length > 0
+                    ? `Bias phrases (prefer these spellings): ${params.biasPhrases.slice(0, 300).join(", ")}`
+                    : "",
                 ].join("\n"),
               },
               callbacks: {
@@ -309,6 +345,7 @@ class GeminiSpeechRecognitionService implements SpeechRecognitionService {
     mimeType: string;
     primaryLanguageCode: string;
     additionalLanguageCodes: string[];
+    biasPhrases: string[];
   }): Promise<{ transcript: string; languageCode: string; confidence: number | null }> {
     const model = this.getVertexClient().getGenerativeModel({
       model: fallbackModelName,
@@ -334,6 +371,9 @@ class GeminiSpeechRecognitionService implements SpeechRecognitionService {
                 "- Handle Myanmar and English mixed speech.",
                 `- Primary language: ${params.primaryLanguageCode}`,
                 `- Additional languages: ${params.additionalLanguageCodes.join(", ") || "none"}`,
+                params.biasPhrases.length > 0
+                  ? `- bias_phrases: ${params.biasPhrases.slice(0, 400).join(", ")}`
+                  : "",
               ].join("\n"),
             },
             {
@@ -378,6 +418,7 @@ class GeminiSpeechRecognitionService implements SpeechRecognitionService {
       input.additionalLanguages,
       primaryLanguageCode,
     );
+    const biasPhrases = buildBiasPhraseList(input);
 
     let transcript = "";
     let confidence: number | null = null;
@@ -390,6 +431,7 @@ class GeminiSpeechRecognitionService implements SpeechRecognitionService {
         mimeType,
         primaryLanguageCode,
         additionalLanguageCodes,
+        biasPhrases,
       });
     } catch (error) {
       logger.warn("Live voice transcription failed, falling back", {
@@ -406,6 +448,7 @@ class GeminiSpeechRecognitionService implements SpeechRecognitionService {
           mimeType,
           primaryLanguageCode,
           additionalLanguageCodes,
+          biasPhrases,
         });
         transcript = fallback.transcript;
         confidence = fallback.confidence;
@@ -442,6 +485,7 @@ class GeminiSpeechRecognitionService implements SpeechRecognitionService {
       transcriptLength: transcript.length,
       languageCode,
       lowConfidence,
+      biasPhraseCount: biasPhrases.length,
     });
 
     return {

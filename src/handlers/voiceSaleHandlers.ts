@@ -6,6 +6,7 @@ import { config } from "../config/index.js";
 import { createSpeechRecognitionService } from "../services/SpeechRecognitionService.js";
 import { createLlmSaleParserService } from "../services/LlmSaleParserService.js";
 import { PitiXBackendAdapter } from "../adapters/PitiXBackendAdapter.js";
+import { buildCatalogBiasPhrases } from "../utils/catalogBias.js";
 import { logger } from "../utils/logger.js";
 
 const speechRecognitionService = createSpeechRecognitionService();
@@ -170,6 +171,30 @@ const buildProcessResponse = (params: {
   },
 });
 
+const buildSpeechRecognitionInput = (params: {
+  context: VoiceSaleRequestContext;
+  audioBase64: string;
+  mimeType: string;
+  primaryLanguage: string;
+  additionalLanguages: string[];
+  transcriptOverride?: string;
+  biasPhrases?: string[];
+}) => ({
+  requestId: params.context.requestId,
+  audioBase64: params.audioBase64,
+  mimeType: params.mimeType,
+  primaryLanguage: params.primaryLanguage,
+  additionalLanguages: params.additionalLanguages,
+  transcriptOverride: params.transcriptOverride,
+  biasPhrases: params.biasPhrases,
+});
+
+export const handleCatalog = async (req: RequestWithContext, res: Response) => {
+  const context = buildVoiceContext(req);
+  const catalog = await pitixBackendAdapter.fetchCatalog(context);
+  res.json(catalog);
+};
+
 export const handleRecognize = async (req: RequestWithContext, res: Response) => {
   const requestWithAudio = req as RequestWithAudio;
   const audio = readAudioPayload(requestWithAudio);
@@ -177,15 +202,29 @@ export const handleRecognize = async (req: RequestWithContext, res: Response) =>
   const context = buildVoiceContext(req);
   const primaryLanguage = readPrimaryLanguage(req);
   const additionalLanguages = readAdditionalLanguages(req);
+  let biasPhrases: string[] = [];
 
-  const recognized = await speechRecognitionService.recognize({
-    requestId: context.requestId,
-    audioBase64: audio.audioBase64,
-    mimeType: audio.mimeType,
-    primaryLanguage,
-    additionalLanguages,
-    transcriptOverride: readTranscriptOverride(req),
-  });
+  try {
+    const catalog = await pitixBackendAdapter.fetchCatalog(context);
+    biasPhrases = buildCatalogBiasPhrases(catalog);
+  } catch (error) {
+    logger.warn("PitiX catalog preload failed before recognize", {
+      requestId: context.requestId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  const recognized = await speechRecognitionService.recognize(
+    buildSpeechRecognitionInput({
+      context,
+      audioBase64: audio.audioBase64,
+      mimeType: audio.mimeType,
+      primaryLanguage,
+      additionalLanguages,
+      transcriptOverride: readTranscriptOverride(req),
+      biasPhrases,
+    }),
+  );
 
   res.json({
     requestId: context.requestId,
@@ -234,17 +273,20 @@ export const handleProcess = async (req: RequestWithContext, res: Response) => {
   const context = buildVoiceContext(req);
   const primaryLanguage = readPrimaryLanguage(req);
   const additionalLanguages = readAdditionalLanguages(req);
-
-  const recognized = await speechRecognitionService.recognize({
-    requestId: context.requestId,
-    audioBase64: audio.audioBase64,
-    mimeType: audio.mimeType,
-    primaryLanguage,
-    additionalLanguages,
-    transcriptOverride: readTranscriptOverride(req),
-  });
-
   const catalog = await pitixBackendAdapter.fetchCatalog(context);
+  const biasPhrases = buildCatalogBiasPhrases(catalog);
+
+  const recognized = await speechRecognitionService.recognize(
+    buildSpeechRecognitionInput({
+      context,
+      audioBase64: audio.audioBase64,
+      mimeType: audio.mimeType,
+      primaryLanguage,
+      additionalLanguages,
+      transcriptOverride: readTranscriptOverride(req),
+      biasPhrases,
+    }),
+  );
   const draft = await llmSaleParserService.parse({
     requestId: context.requestId,
     transcript: recognized.transcript,
@@ -253,9 +295,10 @@ export const handleProcess = async (req: RequestWithContext, res: Response) => {
 
   logger.info("Voice sale process completed", {
     requestId: context.requestId,
-    transcript: recognized.transcript,
+    transcriptLength: recognized.transcript.length,
     lowConfidence: recognized.lowConfidence,
     draftConfidence: draft.confidence,
+    biasPhraseCount: biasPhrases.length,
   });
 
   res.json(

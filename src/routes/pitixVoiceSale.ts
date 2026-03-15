@@ -1,6 +1,7 @@
 import { Router } from "express";
 import multer from "multer";
 import {
+  handleCatalog,
   handleCreate,
   handleParse,
   handleProcess,
@@ -22,6 +23,10 @@ pitixVoiceSaleRouter.post("/voice-sale/recognize", audioUpload.single("audio"), 
 
 pitixVoiceSaleRouter.post("/voice-sale/parse", (req, res, next) => {
   void handleParse(req as RequestWithContext, res).catch(next);
+});
+
+pitixVoiceSaleRouter.post("/voice-sale/catalog", (req, res, next) => {
+  void handleCatalog(req as RequestWithContext, res).catch(next);
 });
 
 pitixVoiceSaleRouter.post("/voice-sale/process", audioUpload.single("audio"), (req, res, next) => {

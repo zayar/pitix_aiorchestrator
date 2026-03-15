@@ -14,7 +14,9 @@ export const buildRetailSaleParserPrompt = (params: {
     "- Never invent products or customers.",
     "- If customer is missing, use null.",
     "- If quantity is missing, use 1.",
-    "- Keep phrases close to the speech text.",
+    "- Prefer exact catalog spellings from the known customer and product lists when there is a likely match.",
+    "- If the transcript contains an English transliteration but the known catalog name is in Myanmar, return the closest known catalog spelling.",
+    "- Keep phrases close to the speech text, but canonicalize to a known catalog name when confidence is high.",
     '- Example: "2 coke, 1 water, customer Mg Mg"',
     '- Example: "3 fried rice take away"',
     '- Example: "1 shampoo and 2 conditioner"',
@@ -25,4 +27,3 @@ export const buildRetailSaleParserPrompt = (params: {
     `Transcript: ${params.transcript}`,
   ].join("\n");
 };
-
