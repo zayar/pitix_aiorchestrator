@@ -44,12 +44,37 @@ const getUrlEnv = (key: string, fallback: string): string => {
   return value;
 };
 
+const normalizeSttProvider = (value: string): "auto" | "stub" => {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (!normalized || normalized === "auto") {
+    return "auto";
+  }
+  if (normalized === "stub") {
+    return "stub";
+  }
+  if (normalized.includes("gemini") || normalized.includes("vertex")) {
+    return "auto";
+  }
+  return "auto";
+};
+
+const normalizeLlmProvider = (value: string): "heuristic" | "vertex_gemini" => {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (!normalized || normalized === "heuristic") {
+    return "heuristic";
+  }
+  if (normalized === "vertex_gemini" || normalized.includes("gemini") || normalized.includes("vertex")) {
+    return "vertex_gemini";
+  }
+  return "heuristic";
+};
+
 export const config = {
   port: getPositiveNumberEnv("PORT", 8080),
   requestBodyLimit: getStringEnv("REQUEST_BODY_LIMIT", "12mb"),
   logRequestBodies: getBooleanEnv("LOG_REQUEST_BODIES", false),
-  sttProvider: getStringEnv("STT_PROVIDER", "auto"),
-  llmProvider: getStringEnv("LLM_PROVIDER", "heuristic"),
+  sttProvider: normalizeSttProvider(getStringEnv("STT_PROVIDER", "auto")),
+  llmProvider: normalizeLlmProvider(getStringEnv("LLM_PROVIDER", "heuristic")),
   gcpProjectId: String(
     process.env.GCP_PROJECT_ID ??
       process.env.GOOGLE_CLOUD_PROJECT ??
