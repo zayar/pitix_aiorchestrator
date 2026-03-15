@@ -19,6 +19,70 @@ const readRefreshToken = (req: RequestWithContext): string | undefined =>
     .replace(/^Bearer\s+/i, "")
     .trim() || undefined;
 
+type RequestWithAudio = RequestWithContext & {
+  file?: Express.Multer.File;
+};
+
+type ResolvedAudioPayload = {
+  audioBase64: string;
+  mimeType: string;
+  source: "multipart" | "json";
+  sizeBytes?: number;
+};
+
+const parseStringList = (value: unknown): string[] => {
+  if (Array.isArray(value)) {
+    return value.map((entry) => String(entry ?? "").trim()).filter(Boolean);
+  }
+
+  const rawValue = String(value ?? "").trim();
+  if (!rawValue) {
+    return [];
+  }
+
+  if (rawValue.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(rawValue);
+      if (Array.isArray(parsed)) {
+        return parsed.map((entry) => String(entry ?? "").trim()).filter(Boolean);
+      }
+    } catch (_error) {
+      // Fall through to comma-separated parsing.
+    }
+  }
+
+  return rawValue
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+};
+
+const readPrimaryLanguage = (req: RequestWithContext): string =>
+  String(req.body?.language?.primary ?? req.body?.languagePrimary ?? "my-MM").trim() || "my-MM";
+
+const readAdditionalLanguages = (req: RequestWithContext): string[] =>
+  parseStringList(req.body?.language?.secondary ?? req.body?.languageSecondary);
+
+const readTranscriptOverride = (req: RequestWithContext): string | undefined =>
+  String(req.body?.debug?.transcriptOverride ?? req.body?.debugTranscriptOverride ?? "").trim() || undefined;
+
+const readAudioPayload = (req: RequestWithAudio): ResolvedAudioPayload => {
+  if (req.file?.buffer?.length) {
+    return {
+      audioBase64: req.file.buffer.toString("base64"),
+      mimeType: String(req.file.mimetype || "audio/m4a").trim() || "audio/m4a",
+      source: "multipart",
+      sizeBytes: req.file.size,
+    };
+  }
+
+  return {
+    audioBase64: String(req.body?.audio?.base64 ?? "").trim(),
+    mimeType: String(req.body?.audio?.mimeType ?? "audio/m4a").trim() || "audio/m4a",
+    source: "json",
+  };
+};
+
 const buildVoiceContext = (req: RequestWithContext): VoiceSaleRequestContext => {
   const businessId = String(req.body?.businessId ?? "").trim();
   const userId = String(req.body?.userId ?? "").trim();
@@ -77,20 +141,25 @@ const buildProcessResponse = (params: {
 
 export const handleRecognize = async (req: RequestWithContext, res: Response) => {
   const context = buildVoiceContext(req);
-  const audioBase64 = String(req.body?.audio?.base64 ?? "").trim();
-  const mimeType = String(req.body?.audio?.mimeType ?? "audio/m4a").trim();
-  const primaryLanguage = String(req.body?.language?.primary ?? "my-MM").trim() || "my-MM";
-  const additionalLanguages = Array.isArray(req.body?.language?.secondary)
-    ? req.body.language.secondary.map((entry: unknown) => String(entry ?? "").trim()).filter(Boolean)
-    : [];
+  const audio = readAudioPayload(req as RequestWithAudio);
+  const primaryLanguage = readPrimaryLanguage(req);
+  const additionalLanguages = readAdditionalLanguages(req);
+
+  logger.info("Voice sale audio received", {
+    requestId: context.requestId,
+    route: "recognize",
+    source: audio.source,
+    mimeType: audio.mimeType,
+    sizeBytes: audio.sizeBytes,
+  });
 
   const recognized = await speechRecognitionService.recognize({
     requestId: context.requestId,
-    audioBase64,
-    mimeType,
+    audioBase64: audio.audioBase64,
+    mimeType: audio.mimeType,
     primaryLanguage,
     additionalLanguages,
-    transcriptOverride: String(req.body?.debug?.transcriptOverride ?? "").trim() || undefined,
+    transcriptOverride: readTranscriptOverride(req),
   });
 
   res.json({
@@ -135,20 +204,25 @@ export const handleParse = async (req: RequestWithContext, res: Response) => {
 
 export const handleProcess = async (req: RequestWithContext, res: Response) => {
   const context = buildVoiceContext(req);
-  const audioBase64 = String(req.body?.audio?.base64 ?? "").trim();
-  const mimeType = String(req.body?.audio?.mimeType ?? "audio/m4a").trim();
-  const primaryLanguage = String(req.body?.language?.primary ?? "my-MM").trim() || "my-MM";
-  const additionalLanguages = Array.isArray(req.body?.language?.secondary)
-    ? req.body.language.secondary.map((entry: unknown) => String(entry ?? "").trim()).filter(Boolean)
-    : [];
+  const audio = readAudioPayload(req as RequestWithAudio);
+  const primaryLanguage = readPrimaryLanguage(req);
+  const additionalLanguages = readAdditionalLanguages(req);
+
+  logger.info("Voice sale audio received", {
+    requestId: context.requestId,
+    route: "process",
+    source: audio.source,
+    mimeType: audio.mimeType,
+    sizeBytes: audio.sizeBytes,
+  });
 
   const recognized = await speechRecognitionService.recognize({
     requestId: context.requestId,
-    audioBase64,
-    mimeType,
+    audioBase64: audio.audioBase64,
+    mimeType: audio.mimeType,
     primaryLanguage,
     additionalLanguages,
-    transcriptOverride: String(req.body?.debug?.transcriptOverride ?? "").trim() || undefined,
+    transcriptOverride: readTranscriptOverride(req),
   });
 
   const catalog = await pitixBackendAdapter.fetchCatalog(context);

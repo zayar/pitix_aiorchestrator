@@ -1,4 +1,5 @@
 import { Router } from "express";
+import multer from "multer";
 import {
   handleCreate,
   handleParse,
@@ -8,8 +9,14 @@ import {
 import type { RequestWithContext } from "../middleware/requestContext.js";
 
 export const pitixVoiceSaleRouter = Router();
+const audioUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 4 * 1024 * 1024,
+  },
+});
 
-pitixVoiceSaleRouter.post("/voice-sale/recognize", (req, res, next) => {
+pitixVoiceSaleRouter.post("/voice-sale/recognize", audioUpload.single("audio"), (req, res, next) => {
   void handleRecognize(req as RequestWithContext, res).catch(next);
 });
 
@@ -17,7 +24,7 @@ pitixVoiceSaleRouter.post("/voice-sale/parse", (req, res, next) => {
   void handleParse(req as RequestWithContext, res).catch(next);
 });
 
-pitixVoiceSaleRouter.post("/voice-sale/process", (req, res, next) => {
+pitixVoiceSaleRouter.post("/voice-sale/process", audioUpload.single("audio"), (req, res, next) => {
   void handleProcess(req as RequestWithContext, res).catch(next);
 });
 
