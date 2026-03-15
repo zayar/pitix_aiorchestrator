@@ -133,7 +133,8 @@ class VertexSpeechRecognitionService implements SpeechRecognitionService {
       requestId: input.requestId,
       provider: "vertex_gemini",
       confidence,
-      transcript,
+      transcriptLength: transcript.length,
+      languageCode: String(payload?.languageCode ?? input.primaryLanguage),
     });
 
     return {
@@ -152,4 +153,3 @@ export const createSpeechRecognitionService = (): SpeechRecognitionService => {
   }
   return new StubSpeechRecognitionService();
 };
-

@@ -98,6 +98,7 @@ const toDraftItem = (
 };
 
 const buildDraftFromPhrases = (params: {
+  requestId: string;
   transcript: string;
   catalog: CatalogSnapshot;
   customerPhrase: string;
@@ -137,15 +138,30 @@ const buildDraftFromPhrases = (params: {
       ? params.baseConfidence * 0.4
       : (matchedCount / totalSignals) * 0.7 + params.baseConfidence * 0.3,
   );
-  const needsClarification = !customer || items.some((item) => !item.product);
+  const matchedItems = items.filter((item) => item.product);
+  const hasStrongMatchedCart =
+    matchedItems.length > 0 &&
+    unmatchedPhrases.length === 0 &&
+    subtotal > 0 &&
+    matchedItems.every((item) => (item.product?.confidence ?? 0) >= 0.8);
+  const hasLowConfidenceMatchedItem = matchedItems.some((item) => (item.product?.confidence ?? 0) < 0.55);
+  const needsClarification =
+    items.length === 0 ||
+    matchedItems.length === 0 ||
+    subtotal <= 0 ||
+    unmatchedPhrases.length > 0 ||
+    (!hasStrongMatchedCart && hasLowConfidenceMatchedItem);
 
   logger.info("Parser draft ready", {
-    transcript: params.transcript,
+    requestId: params.requestId,
     parserProvider: params.parserProvider,
-    customerId: customer?.id,
-    productIds: items.map((item) => item.product?.id ?? null),
+    customerMatched: Boolean(customer),
+    matchedItemCount: matchedItems.length,
+    itemCount: items.length,
     confidence,
     unmatchedCount: unmatchedPhrases.length,
+    subtotal,
+    needsClarification,
   });
 
   return {
@@ -177,7 +193,7 @@ class HybridSaleParserService implements LlmSaleParserService {
     catalog: CatalogSnapshot;
   }): Promise<ParsedSaleDraft> {
     const transcript = String(params.transcript ?? "").trim();
-    const heuristic = this.parseHeuristically(transcript, params.catalog);
+    const heuristic = this.parseHeuristically(params.requestId, transcript, params.catalog);
     if (config.llmProvider !== "vertex_gemini" || !this.vertex) {
       return heuristic;
     }
@@ -233,6 +249,7 @@ class HybridSaleParserService implements LlmSaleParserService {
       }
 
       return buildDraftFromPhrases({
+        requestId: params.requestId,
         transcript,
         catalog: params.catalog,
         customerPhrase,
@@ -249,7 +266,7 @@ class HybridSaleParserService implements LlmSaleParserService {
     }
   }
 
-  private parseHeuristically(transcript: string, catalog: CatalogSnapshot): ParsedSaleDraft {
+  private parseHeuristically(requestId: string, transcript: string, catalog: CatalogSnapshot): ParsedSaleDraft {
     const customerPhrase = extractCustomerHint(transcript);
     const itemPhrases = splitItemSegments(transcript).map((segment) => {
       const quantity = parseSpokenQuantity(segment) ?? 1;
@@ -260,6 +277,7 @@ class HybridSaleParserService implements LlmSaleParserService {
     });
 
     return buildDraftFromPhrases({
+      requestId,
       transcript,
       catalog,
       customerPhrase,
@@ -271,4 +289,3 @@ class HybridSaleParserService implements LlmSaleParserService {
 }
 
 export const createLlmSaleParserService = (): LlmSaleParserService => new HybridSaleParserService();
-

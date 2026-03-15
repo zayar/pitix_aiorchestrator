@@ -74,6 +74,13 @@ const sanitizeHeadersForLogs = (headers: HeadersInit | undefined): Record<string
 const getBodyPreview = (body: string): string =>
   body.length > 400 ? `${body.slice(0, 400)}...` : body;
 
+const logGraphqlDebug = (message: string, fields?: Record<string, unknown>) => {
+  if (!config.pitixDebugLogs) {
+    return;
+  }
+  logger.info(message, fields);
+};
+
 export const pitixGraphqlRequest = async <TData>(
   params: PitixGraphqlRequestParams,
 ): Promise<TData> => {
@@ -86,7 +93,7 @@ export const pitixGraphqlRequest = async <TData>(
   const elapsedMs = () => Date.now() - startedAtMs;
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
-  logger.info("PitiX GraphQL request started", {
+  logGraphqlDebug("PitiX GraphQL request started", {
     requestId: params.requestId,
     endpoint: params.endpoint,
     operationName,
@@ -114,7 +121,7 @@ export const pitixGraphqlRequest = async <TData>(
 
     timeoutPhase = "during_body_parse";
 
-    logger.info("PitiX GraphQL response headers received", {
+    logGraphqlDebug("PitiX GraphQL response headers received", {
       requestId: params.requestId,
       endpoint: params.endpoint,
       operationName,
@@ -295,7 +302,7 @@ export const pitixGraphqlRequest = async <TData>(
     });
   }
 
-  logger.info("PitiX GraphQL request completed", {
+  logGraphqlDebug("PitiX GraphQL request completed", {
     requestId: params.requestId,
     endpoint: params.endpoint,
     operationName,

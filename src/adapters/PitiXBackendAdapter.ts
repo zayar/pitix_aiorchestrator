@@ -17,7 +17,7 @@ import type {
   PitiXTokenRefreshResponse,
   VoiceSaleRequestContext,
 } from "../types/contracts.js";
-import { AppError } from "../utils/errors.js";
+import { AppError, isAppError } from "../utils/errors.js";
 import { logger } from "../utils/logger.js";
 import { pitixGraphqlRequest } from "../utils/pitixGraphql.js";
 
@@ -355,6 +355,9 @@ const toTrimmedString = (value: unknown): string | undefined => {
   return trimmed || undefined;
 };
 
+const getAppErrorDetails = (value: unknown): Record<string, unknown> =>
+  typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+
 const normalizeForLookup = (value: unknown): string =>
   String(value ?? "")
     .trim()
@@ -529,14 +532,55 @@ export class PitiXBackendAdapter {
     query: string;
     variables?: Record<string, unknown>;
     requestId?: string;
+    retryOnUnauthorized?: boolean;
   }): Promise<TData> {
-    return pitixGraphqlRequest<TData>({
-      endpoint: config.pitixPosGraphqlUrl,
-      query: params.query,
-      variables: params.variables,
-      headers: buildPosHeaders(params.session),
-      requestId: params.requestId,
-    });
+    try {
+      return await pitixGraphqlRequest<TData>({
+        endpoint: config.pitixPosGraphqlUrl,
+        query: params.query,
+        variables: params.variables,
+        headers: buildPosHeaders(params.session),
+        requestId: params.requestId,
+      });
+    } catch (error) {
+      const details = getAppErrorDetails(isAppError(error) ? error.details : undefined);
+      const httpStatus = Number(details.httpStatus ?? 0);
+      const shouldRetry =
+        (params.retryOnUnauthorized ?? true) &&
+        isAppError(error) &&
+        error.code === "pitix_backend_http_error" &&
+        httpStatus === 401 &&
+        Boolean(params.session.refreshToken);
+
+      if (!shouldRetry) {
+        throw error;
+      }
+
+      logger.warn("PitiX POS request returned 401, attempting token refresh", {
+        requestId: params.requestId,
+        operationName: details.operationName,
+        businessId: params.session.businessId,
+        userId: params.session.userId,
+        storeId: params.session.storeId,
+        hasRefreshToken: Boolean(params.session.refreshToken),
+      });
+
+      const refreshed = await this.refreshToken(String(params.session.refreshToken), params.requestId);
+      params.session.token = refreshed.token;
+      params.session.refreshToken = refreshed.refreshToken ?? params.session.refreshToken;
+
+      logger.info("PitiX POS token refresh succeeded, retrying request", {
+        requestId: params.requestId,
+        operationName: details.operationName,
+        businessId: params.session.businessId,
+        userId: params.session.userId,
+      });
+
+      return this.requestPos<TData>({
+        ...params,
+        retryOnUnauthorized: false,
+      });
+    }
   }
 
   async verifyOTA(requestId: string, traceRequestId?: string): Promise<PitiXAccountAuthResult> {
@@ -876,15 +920,6 @@ export class PitiXBackendAdapter {
   }): Promise<{ id: string; name: string; source: "request" | "lookup" | "default_cash" }> {
     const requestedId = toTrimmedString(params.requested?.id);
     const requestedName = toTrimmedString(params.requested?.name);
-
-    if (requestedId && requestedName) {
-      return {
-        id: requestedId,
-        name: requestedName,
-        source: "request",
-      };
-    }
-
     const availableMethods = await this.getPaymentMethods(params.session, params.requestId);
     const requestedNameKey = normalizeForLookup(requestedName);
 
@@ -921,7 +956,7 @@ export class PitiXBackendAdapter {
     return {
       id: resolvedMethod.id,
       name: resolvedMethod.name,
-      source: requestedId || requestedName ? "lookup" : "default_cash",
+      source: requestedId && requestedName && resolvedMethod.id === requestedId ? "request" : requestedId || requestedName ? "lookup" : "default_cash",
     };
   }
 

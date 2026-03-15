@@ -14,6 +14,11 @@ const pitixBackendAdapter = new PitiXBackendAdapter();
 const readAccessToken = (req: RequestWithContext): string =>
   String(req.headers.authorization ?? req.headers.token ?? "").replace(/^Bearer\s+/i, "").trim();
 
+const readRefreshToken = (req: RequestWithContext): string | undefined =>
+  String(req.body?.refreshToken ?? req.headers["x-refresh-token"] ?? "")
+    .replace(/^Bearer\s+/i, "")
+    .trim() || undefined;
+
 const buildVoiceContext = (req: RequestWithContext): VoiceSaleRequestContext => {
   const businessId = String(req.body?.businessId ?? "").trim();
   const userId = String(req.body?.userId ?? "").trim();
@@ -44,6 +49,7 @@ const buildVoiceContext = (req: RequestWithContext): VoiceSaleRequestContext => 
     userId,
     userName: String(req.body?.userName ?? "").trim() || undefined,
     token,
+    refreshToken: readRefreshToken(req),
     saleChannel: saleChannelName ? { name: saleChannelName } : undefined,
   };
 };
