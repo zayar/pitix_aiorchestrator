@@ -330,6 +330,11 @@ const generateShortNumber = (): string => String(Date.now()).slice(-6);
 const toRecord = (value: unknown): Record<string, unknown> =>
   typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
 
+const toTrimmedString = (value: unknown): string | undefined => {
+  const trimmed = String(value ?? "").trim();
+  return trimmed || undefined;
+};
+
 const mapSaleChannel = (channel: {
   id?: string | null;
   code?: string | null;
@@ -870,12 +875,44 @@ export class PitiXBackendAdapter {
     }
 
     const total = matchedItems.reduce((sum, item) => sum + item.lineTotal, 0);
-    const saleStatus = body.saleOptions?.saleStatus ?? config.pitixDefaultSaleStatus;
     const storeId = body.storeId || context.storeId;
     if (!storeId) {
       throw new AppError("storeId is required to create a PitiX sale.", {
         statusCode: 400,
         code: "missing_store_id",
+      });
+    }
+
+    const paymentMethodId = toTrimmedString(body.paymentMethod?.id);
+    const paymentMethodName = toTrimmedString(body.paymentMethod?.name);
+    const hasFullPaymentMethod = Boolean(paymentMethodId && paymentMethodName);
+    const saleStatus =
+      body.saleOptions?.saleStatus ??
+      (hasFullPaymentMethod ? "COMPLETED" : config.pitixDefaultSaleStatus);
+    const saleChannelName = toTrimmedString(body.saleChannel?.name) ?? context.saleChannel?.name ?? "AI Sales Assistant";
+    const sellerName = toTrimmedString(context.userName) ?? body.userId;
+    const diningOption = body.saleOptions?.diningOption || "TakeAway";
+
+    logger.info("Preparing PitiX create sale payload", {
+      requestId: context.requestId,
+      businessId: body.businessId,
+      storeId,
+      userId: body.userId,
+      sellerName,
+      saleChannel: saleChannelName,
+      saleStatus,
+      itemCount: matchedItems.length,
+      hasPaymentMethodId: Boolean(paymentMethodId),
+      hasPaymentMethodName: Boolean(paymentMethodName),
+      diningOption,
+    });
+
+    if (!body.saleOptions?.saleStatus && !hasFullPaymentMethod) {
+      logger.warn("Create sale is falling back to the configured sale status because payment method mapping is incomplete", {
+        requestId: context.requestId,
+        configuredSaleStatus: config.pitixDefaultSaleStatus,
+        hasPaymentMethodId: Boolean(paymentMethodId),
+        hasPaymentMethodName: Boolean(paymentMethodName),
       });
     }
 
@@ -889,20 +926,20 @@ export class PitiXBackendAdapter {
       note: body.draft.transcript,
       received_amount: saleStatus === "COMPLETED" ? String(total) : "0",
       refund_amount: "0",
-      sale_channel: body.saleChannel?.name || context.saleChannel?.name || "AI Sales Assistant",
+      sale_channel: saleChannelName,
       sale_date: new Date(),
       sale_number: generateShortNumber(),
       operation_status: "Request",
       sale_status: saleStatus,
       seller_id: body.userId,
-      seller_name: context.userName || body.userId,
+      seller_name: sellerName,
       shipping_amount: "0",
       tax_amount: "0",
       total_amount: String(total),
       is_point_eligible: Boolean(body.saleOptions?.isPointEligible),
-      dining_option: body.saleOptions?.diningOption || "TakeAway",
-      payment_method: body.paymentMethod?.name ?? undefined,
-      payment_method_id: body.paymentMethod?.id ?? undefined,
+      dining_option: diningOption,
+      payment_method: paymentMethodName,
+      payment_method_id: paymentMethodId,
       business: {
         connect: {
           id: body.businessId,

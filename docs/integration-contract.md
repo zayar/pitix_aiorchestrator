@@ -115,7 +115,7 @@ Request body:
     "name": "AI Sales Assistant"
   },
   "saleOptions": {
-    "saleStatus": "PENDING",
+    "saleStatus": "COMPLETED",
     "diningOption": "TakeAway",
     "isPointEligible": false
   },
@@ -134,7 +134,7 @@ Response body:
   "sale": {
     "id": "sale_id",
     "saleNumber": "123456",
-    "saleStatus": "PENDING",
+    "saleStatus": "COMPLETED",
     "totalAmount": 4500,
     "customerName": "Mg Mg"
   },
@@ -143,6 +143,10 @@ Response body:
   }
 }
 ```
+
+Notes:
+- If `paymentMethod.id` and `paymentMethod.name` are both present, the create flow now defaults to a normal completed sale unless you explicitly send `"saleStatus": "PENDING"`.
+- Use `"saleStatus": "PENDING"` only when you intentionally want a submitted/held order instead of a completed POS sale.
 
 ## 4. Error format
 
