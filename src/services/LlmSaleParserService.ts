@@ -17,6 +17,7 @@ import {
   parseSpokenQuantity,
   removeQuantityWords,
   splitItemSegments,
+  stripCustomerTail,
 } from "../utils/voiceText.js";
 import { buildRetailSaleParserPrompt } from "../prompts/retailSaleParserPrompt.js";
 
@@ -41,6 +42,9 @@ export interface LlmSaleParserService {
 const clampConfidence = (value: number): number => Math.max(0, Math.min(1, value));
 
 const uniqueNames = (values: string[]): string[] => Array.from(new Set(values.filter(Boolean)));
+const CUSTOMER_PREFIX_MARKERS = new Set(["customer", "ဖောက်သည်", "ဖေါက်သည်"]);
+const CUSTOMER_SUFFIX_MARKERS = new Set(["for", "to"]);
+const MYANMAR_FOR_MARKER = "အတွက်";
 
 const buildMatchedCustomer = (
   customerName: string,
@@ -66,6 +70,135 @@ const buildCustomerSuggestions = (
     return [];
   }
   return uniqueNames(match.suggestions).slice(0, 3);
+};
+
+const splitNormalizedTokens = (value: string): string[] =>
+  normalizeVoiceText(value)
+    .split(" ")
+    .map((token) => token.trim())
+    .filter(Boolean);
+
+const findCustomerRegionMatch = (
+  tokens: string[],
+  customers: CatalogSnapshot["customers"],
+  mode: "prefix" | "suffix",
+): { customerPhrase: string; consumed: number; confidence: number } | null => {
+  const maxTokens = Math.min(5, tokens.length);
+  let best: { customerPhrase: string; consumed: number; confidence: number } | null = null;
+
+  for (let count = 1; count <= maxTokens; count += 1) {
+    const regionTokens =
+      mode === "prefix" ? tokens.slice(0, count) : tokens.slice(tokens.length - count);
+    const regionPhrase = regionTokens.join(" ");
+    const match = findBestEntityMatchByName(regionPhrase, customers);
+    if (!match.match || match.ambiguous || match.confidence < 0.64) {
+      continue;
+    }
+
+    if (!best || match.confidence > best.confidence || count > best.consumed) {
+      best = {
+        customerPhrase: match.match.name,
+        consumed: count,
+        confidence: match.confidence,
+      };
+    }
+  }
+
+  return best;
+};
+
+const extractCustomerContext = (
+  transcript: string,
+  customers: CatalogSnapshot["customers"],
+): { customerPhrase: string; itemTranscript: string } => {
+  const tokens = splitNormalizedTokens(transcript);
+  if (tokens.length === 0 || customers.length === 0) {
+    const fallbackCustomer = extractCustomerHint(transcript);
+    const fallbackItems = stripCustomerTail(transcript) || normalizeVoiceText(transcript);
+    return {
+      customerPhrase: fallbackCustomer,
+      itemTranscript: fallbackItems,
+    };
+  }
+
+  let best:
+    | {
+        customerPhrase: string;
+        itemTranscript: string;
+        confidence: number;
+      }
+    | null = null;
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+
+    if (CUSTOMER_PREFIX_MARKERS.has(token)) {
+      const tail = tokens.slice(index + 1);
+      const match = findCustomerRegionMatch(tail, customers, "prefix");
+      if (!match) {
+        continue;
+      }
+
+      const itemTokens = [...tokens.slice(0, index), ...tail.slice(match.consumed)];
+      const candidate = {
+        customerPhrase: match.customerPhrase,
+        itemTranscript: itemTokens.join(" ").trim(),
+        confidence: match.confidence,
+      };
+      if (!best || candidate.confidence > best.confidence) {
+        best = candidate;
+      }
+      continue;
+    }
+
+    if (CUSTOMER_SUFFIX_MARKERS.has(token)) {
+      const tail = tokens.slice(index + 1);
+      const match = findCustomerRegionMatch(tail, customers, "prefix");
+      if (!match) {
+        continue;
+      }
+
+      const itemTokens = [...tokens.slice(0, index), ...tail.slice(match.consumed)];
+      const candidate = {
+        customerPhrase: match.customerPhrase,
+        itemTranscript: itemTokens.join(" ").trim(),
+        confidence: match.confidence,
+      };
+      if (!best || candidate.confidence > best.confidence) {
+        best = candidate;
+      }
+      continue;
+    }
+
+    if (token === MYANMAR_FOR_MARKER) {
+      const head = tokens.slice(0, index);
+      const match = findCustomerRegionMatch(head, customers, "suffix");
+      if (!match) {
+        continue;
+      }
+
+      const itemTokens = [...head.slice(0, Math.max(0, head.length - match.consumed)), ...tokens.slice(index + 1)];
+      const candidate = {
+        customerPhrase: match.customerPhrase,
+        itemTranscript: itemTokens.join(" ").trim(),
+        confidence: match.confidence,
+      };
+      if (!best || candidate.confidence > best.confidence) {
+        best = candidate;
+      }
+    }
+  }
+
+  if (best) {
+    return best;
+  }
+
+  const fallbackCustomer = extractCustomerHint(transcript);
+  const fallbackItems = stripCustomerTail(transcript) || normalizeVoiceText(transcript);
+  return {
+    customerPhrase: fallbackCustomer,
+    itemTranscript: fallbackItems,
+  };
 };
 
 const buildMatchedProduct = (
@@ -95,6 +228,69 @@ const buildProductSuggestions = (
     return [];
   }
   return uniqueNames(match.suggestions).slice(0, 3);
+};
+
+const extractCatalogItemPhrases = (
+  transcript: string,
+  products: CatalogSnapshot["products"],
+): Array<{ phrase: string; quantity: number }> => {
+  const tokens = splitNormalizedTokens(transcript);
+  if (tokens.length === 0 || products.length === 0) {
+    return [];
+  }
+
+  const phrases: Array<{ phrase: string; quantity: number }> = [];
+  let index = 0;
+
+  while (index < tokens.length) {
+    let best:
+      | {
+          phrase: string;
+          consumed: number;
+          confidence: number;
+        }
+      | null = null;
+
+    const maxTokens = Math.min(5, tokens.length - index);
+    for (let count = maxTokens; count >= 1; count -= 1) {
+      const region = tokens.slice(index, index + count).join(" ");
+      const match = findBestEntityMatchByName(region, products);
+      if (!match.match || match.ambiguous || match.confidence < 0.72) {
+        continue;
+      }
+
+      best = {
+        phrase: match.match.name,
+        consumed: count,
+        confidence: match.confidence,
+      };
+      break;
+    }
+
+    if (!best) {
+      index += 1;
+      continue;
+    }
+
+    phrases.push({
+      phrase: best.phrase,
+      quantity: 1,
+    });
+    index += best.consumed;
+  }
+
+  const deduped = new Map<string, { phrase: string; quantity: number }>();
+  for (const row of phrases) {
+    const key = normalizeVoiceText(row.phrase);
+    const existing = deduped.get(key);
+    if (existing) {
+      existing.quantity += row.quantity;
+      continue;
+    }
+    deduped.set(key, { ...row });
+  }
+
+  return Array.from(deduped.values());
 };
 
 const toDraftItem = (
@@ -304,8 +500,13 @@ class HybridSaleParserService implements LlmSaleParserService {
   }
 
   private parseHeuristically(requestId: string, transcript: string, catalog: CatalogSnapshot): ParsedSaleDraft {
-    const customerPhrase = extractCustomerHint(transcript);
-    const extractedLines = extractVoiceLineCandidates(transcript);
+    const customerContext = extractCustomerContext(transcript, catalog.customers);
+    const itemTranscript = customerContext.itemTranscript || transcript;
+    const customerPhrase = customerContext.customerPhrase;
+    const extractedLines = extractVoiceLineCandidates(itemTranscript);
+    const catalogItemPhrases = extractedLines.length === 0
+      ? extractCatalogItemPhrases(itemTranscript, catalog.products)
+      : [];
     const itemPhrases =
       extractedLines.length > 0
         ? extractedLines
@@ -314,13 +515,15 @@ class HybridSaleParserService implements LlmSaleParserService {
               quantity: line.quantity ?? parseSpokenQuantity(line.quantityRaw) ?? 1,
             }))
             .filter((line) => line.phrase)
-        : splitItemSegments(transcript).map((segment) => {
-            const quantity = parseSpokenQuantity(segment) ?? 1;
-            return {
-              phrase: removeQuantityWords(segment) || normalizeVoiceText(segment),
-              quantity,
-            };
-          });
+        : catalogItemPhrases.length > 0
+          ? catalogItemPhrases
+          : splitItemSegments(itemTranscript).map((segment) => {
+              const quantity = parseSpokenQuantity(segment) ?? 1;
+              return {
+                phrase: removeQuantityWords(segment) || normalizeVoiceText(segment),
+                quantity,
+              };
+            });
 
     return buildDraftFromPhrases({
       requestId,
