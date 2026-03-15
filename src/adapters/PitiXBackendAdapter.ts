@@ -158,6 +158,10 @@ type CreateSaleResult = {
   };
 };
 
+type ReceivedPaymentWithBulkResult = {
+  receivedPaymentWithBulk: number | null;
+};
+
 const VERIFY_OTA_MUTATION = `
   mutation VerifyOTA($requestId: String!) {
     verifyOTA(requestId: $requestId) {
@@ -315,6 +319,22 @@ const CREATE_ONE_SALE_MUTATION = `
   }
 `;
 
+const RECEIVED_PAYMENT_WITH_BULK_MUTATION = `
+  mutation ReceivedPaymentWithBulk(
+    $data: [PaymentDetailCreateManyInput!]!
+    $saleId: String
+    $receivedAmount: Float
+    $refundAmount: Float
+  ) {
+    receivedPaymentWithBulk(
+      data: $data
+      saleId: $saleId
+      receivedAmount: $receivedAmount
+      refundAmount: $refundAmount
+    )
+  }
+`;
+
 const toNumber = (value: string | number | null | undefined): number => {
   const parsed = Number(value ?? 0);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -334,6 +354,11 @@ const toTrimmedString = (value: unknown): string | undefined => {
   const trimmed = String(value ?? "").trim();
   return trimmed || undefined;
 };
+
+const normalizeForLookup = (value: unknown): string =>
+  String(value ?? "")
+    .trim()
+    .toLowerCase();
 
 const mapSaleChannel = (channel: {
   id?: string | null;
@@ -847,6 +872,110 @@ export class PitiXBackendAdapter {
     };
   }
 
+  private async resolvePaymentMethodForCreate(params: {
+    session: PitiXSession;
+    requested?: CreateSaleRequestBody["paymentMethod"];
+    requestId?: string;
+  }): Promise<{ id: string; name: string; source: "request" | "lookup" | "default_cash" }> {
+    const requestedId = toTrimmedString(params.requested?.id);
+    const requestedName = toTrimmedString(params.requested?.name);
+
+    if (requestedId && requestedName) {
+      return {
+        id: requestedId,
+        name: requestedName,
+        source: "request",
+      };
+    }
+
+    const availableMethods = await this.getPaymentMethods(params.session, params.requestId);
+    const requestedNameKey = normalizeForLookup(requestedName);
+
+    let resolvedMethod: PitiXPaymentMethod | undefined;
+    if (requestedId) {
+      resolvedMethod = availableMethods.find((method) => method.id === requestedId);
+    }
+    if (!resolvedMethod && requestedNameKey) {
+      resolvedMethod = availableMethods.find((method) => normalizeForLookup(method.name) === requestedNameKey);
+    }
+    if (!resolvedMethod && requestedNameKey) {
+      resolvedMethod = availableMethods.find((method) => normalizeForLookup(method.paymentCode) === requestedNameKey);
+    }
+    if (!resolvedMethod && !requestedId && !requestedNameKey) {
+      resolvedMethod =
+        availableMethods.find((method) => normalizeForLookup(method.name) === "cash") ??
+        availableMethods.find((method) => normalizeForLookup(method.paymentCode) === "cash") ??
+        availableMethods.find((method) => normalizeForLookup(method.name).includes("cash"));
+    }
+
+    if (!resolvedMethod) {
+      throw new AppError("Unable to resolve a valid PitiX payment method for this sale.", {
+        statusCode: 400,
+        code: "payment_method_not_found",
+        details: {
+          businessId: params.session.businessId,
+          storeId: params.session.storeId ?? null,
+          requestedPaymentMethodId: requestedId ?? null,
+          requestedPaymentMethodName: requestedName ?? "Cash",
+        },
+      });
+    }
+
+    return {
+      id: resolvedMethod.id,
+      name: resolvedMethod.name,
+      source: requestedId || requestedName ? "lookup" : "default_cash",
+    };
+  }
+
+  private async recordSalePayment(params: {
+    session: PitiXSession;
+    saleId: string;
+    amount: number;
+    paymentMethodId: string;
+    paymentMethodName: string;
+    sellerName: string;
+    requestId?: string;
+  }): Promise<number> {
+    const result = await this.requestPos<ReceivedPaymentWithBulkResult>({
+      session: params.session,
+      query: RECEIVED_PAYMENT_WITH_BULK_MUTATION,
+      variables: {
+        data: [
+          {
+            sale_id: params.saleId,
+            payment_date: new Date().toISOString(),
+            payment_method: params.paymentMethodName,
+            payment_method_id: params.paymentMethodId,
+            amount: String(params.amount),
+            payment_note: "AI Sales Assistant cash checkout",
+            username: params.sellerName,
+            user_id: params.session.userId,
+          },
+        ],
+        saleId: params.saleId,
+        receivedAmount: params.amount,
+        refundAmount: 0,
+      },
+      requestId: params.requestId,
+    });
+
+    const createdCount = Number(result.receivedPaymentWithBulk ?? 0);
+    if (!Number.isFinite(createdCount) || createdCount <= 0) {
+      throw new AppError("Sale was created but payment finalization did not create a payment detail.", {
+        statusCode: 502,
+        code: "payment_finalize_failed",
+        details: {
+          saleId: params.saleId,
+          paymentMethodId: params.paymentMethodId,
+          paymentMethodName: params.paymentMethodName,
+        },
+      });
+    }
+
+    return createdCount;
+  }
+
   async createSale(
     context: VoiceSaleRequestContext,
     body: CreateSaleRequestBody,
@@ -883,15 +1012,20 @@ export class PitiXBackendAdapter {
       });
     }
 
-    const paymentMethodId = toTrimmedString(body.paymentMethod?.id);
-    const paymentMethodName = toTrimmedString(body.paymentMethod?.name);
-    const hasFullPaymentMethod = Boolean(paymentMethodId && paymentMethodName);
-    const saleStatus =
-      body.saleOptions?.saleStatus ??
-      (hasFullPaymentMethod ? "COMPLETED" : config.pitixDefaultSaleStatus);
+    const saleSession: VoiceSaleRequestContext = {
+      ...context,
+      storeId,
+    };
+    const resolvedPaymentMethod = await this.resolvePaymentMethodForCreate({
+      session: saleSession,
+      requested: body.paymentMethod,
+      requestId: context.requestId,
+    });
+    const saleStatus = body.saleOptions?.saleStatus ?? "COMPLETED";
     const saleChannelName = toTrimmedString(body.saleChannel?.name) ?? context.saleChannel?.name ?? "AI Sales Assistant";
     const sellerName = toTrimmedString(context.userName) ?? body.userId;
     const diningOption = body.saleOptions?.diningOption || "TakeAway";
+    const receivedAmount = saleStatus === "COMPLETED" ? String(total) : "0";
 
     logger.info("Preparing PitiX create sale payload", {
       requestId: context.requestId,
@@ -902,19 +1036,12 @@ export class PitiXBackendAdapter {
       saleChannel: saleChannelName,
       saleStatus,
       itemCount: matchedItems.length,
-      hasPaymentMethodId: Boolean(paymentMethodId),
-      hasPaymentMethodName: Boolean(paymentMethodName),
+      paymentMethodName: resolvedPaymentMethod.name,
+      hasPaymentMethodId: Boolean(resolvedPaymentMethod.id),
+      paymentMethodSource: resolvedPaymentMethod.source,
       diningOption,
+      receivedAmount,
     });
-
-    if (!body.saleOptions?.saleStatus && !hasFullPaymentMethod) {
-      logger.warn("Create sale is falling back to the configured sale status because payment method mapping is incomplete", {
-        requestId: context.requestId,
-        configuredSaleStatus: config.pitixDefaultSaleStatus,
-        hasPaymentMethodId: Boolean(paymentMethodId),
-        hasPaymentMethodName: Boolean(paymentMethodName),
-      });
-    }
 
     const data = {
       id: crypto.randomUUID(),
@@ -924,7 +1051,7 @@ export class PitiXBackendAdapter {
       metadata: "",
       net_amount: String(total),
       note: body.draft.transcript,
-      received_amount: saleStatus === "COMPLETED" ? String(total) : "0",
+      received_amount: receivedAmount,
       refund_amount: "0",
       sale_channel: saleChannelName,
       sale_date: new Date(),
@@ -938,8 +1065,8 @@ export class PitiXBackendAdapter {
       total_amount: String(total),
       is_point_eligible: Boolean(body.saleOptions?.isPointEligible),
       dining_option: diningOption,
-      payment_method: paymentMethodName,
-      payment_method_id: paymentMethodId,
+      payment_method: resolvedPaymentMethod.name,
+      payment_method_id: resolvedPaymentMethod.id,
       business: {
         connect: {
           id: body.businessId,
@@ -980,7 +1107,7 @@ export class PitiXBackendAdapter {
     }
 
     const result = await this.requestPos<CreateSaleResult>({
-      session: context,
+      session: saleSession,
       query: CREATE_ONE_SALE_MUTATION,
       variables: {
         data,
@@ -988,11 +1115,29 @@ export class PitiXBackendAdapter {
       requestId: context.requestId,
     });
 
+    let paymentDetailsCreated = 0;
+    if (saleStatus === "COMPLETED") {
+      paymentDetailsCreated = await this.recordSalePayment({
+        session: saleSession,
+        saleId: result.createOneSale2.id,
+        amount: total,
+        paymentMethodId: resolvedPaymentMethod.id,
+        paymentMethodName: resolvedPaymentMethod.name,
+        sellerName,
+        requestId: context.requestId,
+      });
+    }
+
     logger.info("PitiX create sale completed", {
       requestId: context.requestId,
       saleId: result.createOneSale2.id,
       saleNumber: result.createOneSale2.sale_number,
       saleStatus: result.createOneSale2.sale_status,
+      paymentStatus: saleStatus === "COMPLETED" ? "PAID" : "UNPAID",
+      paymentMethodName: resolvedPaymentMethod.name,
+      hasPaymentMethodId: Boolean(resolvedPaymentMethod.id),
+      receivedAmount,
+      paymentDetailsCreated,
     });
 
     return {
@@ -1003,6 +1148,9 @@ export class PitiXBackendAdapter {
         saleStatus: result.createOneSale2.sale_status,
         totalAmount: toNumber(result.createOneSale2.net_amount),
         customerName: result.createOneSale2.customer?.name ?? null,
+        paymentStatus: saleStatus === "COMPLETED" ? "PAID" : "UNPAID",
+        paymentMethod: resolvedPaymentMethod.name,
+        paymentMethodId: resolvedPaymentMethod.id,
       },
       draft: body.draft,
     };

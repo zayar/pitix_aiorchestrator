@@ -215,6 +215,9 @@ export type CreateSaleResponse = {
     saleStatus: string;
     totalAmount: number;
     customerName?: string | null;
+    paymentStatus?: "PAID" | "UNPAID";
+    paymentMethod?: string | null;
+    paymentMethodId?: string | null;
   };
   draft: ParsedSaleDraft;
 };

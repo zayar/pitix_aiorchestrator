@@ -135,6 +135,9 @@ Response body:
     "id": "sale_id",
     "saleNumber": "123456",
     "saleStatus": "COMPLETED",
+    "paymentStatus": "PAID",
+    "paymentMethod": "Cash",
+    "paymentMethodId": "resolved_cash_payment_method_id",
     "totalAmount": 4500,
     "customerName": "Mg Mg"
   },
@@ -145,7 +148,8 @@ Response body:
 ```
 
 Notes:
-- If `paymentMethod.id` and `paymentMethod.name` are both present, the create flow now defaults to a normal completed sale unless you explicitly send `"saleStatus": "PENDING"`.
+- If `paymentMethod` is omitted, the create flow resolves the store's `Cash` payment method automatically.
+- For normal AI checkout, the create flow now defaults to `"saleStatus": "COMPLETED"` and then records a payment detail so the sale becomes paid in Pitix.
 - Use `"saleStatus": "PENDING"` only when you intentionally want a submitted/held order instead of a completed POS sale.
 
 ## 4. Error format
