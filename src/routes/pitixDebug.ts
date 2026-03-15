@@ -2,10 +2,6 @@ import { Router } from "express";
 import { PitiXBackendAdapter } from "../adapters/PitiXBackendAdapter.js";
 import { config } from "../config/index.js";
 import type {
-  PitiXBusinessSummary,
-  PitiXPaymentMethod,
-  PitiXProduct,
-  PitiXSaleChannel,
   PitiXSession,
   TestAccountRequestBody,
   TestPosReadRequestBody,
@@ -54,36 +50,6 @@ const buildSession = (req: RequestWithContext): PitiXSession => {
     userName,
     saleChannel: saleChannelName ? { name: saleChannelName } : undefined,
   };
-};
-
-const withStepError = (step: string, error: unknown): never => {
-  if (isAppError(error)) {
-    throw new AppError(`PitiX debug step "${step}" failed: ${error.message}`, {
-      statusCode: error.statusCode,
-      code: error.code,
-      details: {
-        step,
-        cause: error.details,
-      },
-    });
-  }
-
-  throw new AppError(`PitiX debug step "${step}" failed.`, {
-    statusCode: 500,
-    code: "pitix_debug_step_failed",
-    details: {
-      step,
-      message: error instanceof Error ? error.message : String(error),
-    },
-  });
-};
-
-const runDebugStep = async <T>(step: string, work: () => Promise<T>): Promise<T> => {
-  try {
-    return await work();
-  } catch (error) {
-    return withStepError(step, error);
-  }
 };
 
 pitixDebugRouter.get("/health", (_req, res) => {
@@ -143,69 +109,56 @@ pitixDebugRouter.post("/test-account", (req, res, next) => {
 pitixDebugRouter.post("/test-pos-read", (req, res, next) => {
   const execute = async () => {
     const request = req as RequestWithContext;
-    const body = (request.body ?? {}) as TestPosReadRequestBody;
     const session = buildSession(request);
-    const requestedProductLimit = Number(body.productLimit ?? 20);
-    const productLimit = Number.isFinite(requestedProductLimit)
-      ? Math.max(1, Math.min(requestedProductLimit, 50))
-      : 20;
+    const startedAtMs = Date.now();
+    const endpoint = config.pitixPosGraphqlUrl;
+    const operationName = "BusinessPing";
 
-    const business = await runDebugStep<PitiXBusinessSummary | null>("business", () =>
-      pitixBackendAdapter.getBusiness(session, request.requestId),
-    );
-    const saleChannels = await runDebugStep<PitiXSaleChannel[]>("saleChannels", () =>
-      pitixBackendAdapter.getSaleChannels(session, request.requestId),
-    );
-    const paymentMethods = await runDebugStep<PitiXPaymentMethod[]>("paymentMethods", () =>
-      pitixBackendAdapter.getPaymentMethods(session, request.requestId),
-    );
-    const products = await runDebugStep<PitiXProduct[]>("products", () =>
-      pitixBackendAdapter.getProducts(
-        session,
-        {
-          take: productLimit,
-          activeOnly: true,
-          storeId: session.storeId,
-        },
-        request.requestId,
-      ),
-    );
+    try {
+      const business = await pitixBackendAdapter.pingBusiness(session, request.requestId);
 
-    res.json({
-      ok: true,
-      business: business
-        ? {
-            id: business.id,
-            name: business.name,
-            defaultStoreId: business.defaultStoreId ?? null,
-          }
-        : null,
-      selectedStoreId: session.storeId ?? business?.defaultStoreId ?? null,
-      saleChannelsCount: saleChannels.length,
-      paymentMethodsCount: paymentMethods.length,
-      productsCount: products.length,
-      sampleSaleChannels: saleChannels.slice(0, 5).map((item) => ({
-        id: item.id,
-        name: item.name,
-        code: item.code ?? null,
-        storeId: item.storeId ?? null,
-      })),
-      samplePaymentMethods: paymentMethods.slice(0, 5).map((item) => ({
-        id: item.id,
-        name: item.name,
-        storeIds: item.stores.map((store) => store.id),
-      })),
-      sampleProducts: products.slice(0, 5).map((item) => ({
-        id: item.id,
-        name: item.name,
-        defaultStockId: item.defaultStockId ?? null,
-        unitPrice:
-          item.defaultStock?.sellingPrice ??
-          item.stocks.find((stock) => stock.storeId === (session.storeId ?? business?.defaultStoreId))?.sellingPrice ??
-          item.stocks[0]?.sellingPrice ??
-          null,
-      })),
-    });
+      res.json({
+        ok: true,
+        endpoint,
+        operationName,
+        elapsedMs: Date.now() - startedAtMs,
+        requestId: request.requestId,
+        businessId: session.businessId,
+        userId: session.userId,
+        storeId: session.storeId ?? null,
+        result: business
+          ? {
+              found: true,
+              business,
+            }
+          : {
+              found: false,
+              business: null,
+            },
+      });
+      return;
+    } catch (error) {
+      if (isAppError(error)) {
+        res.status(error.statusCode).json({
+          ok: false,
+          endpoint,
+          operationName,
+          elapsedMs: Date.now() - startedAtMs,
+          requestId: request.requestId,
+          businessId: session.businessId,
+          userId: session.userId,
+          storeId: session.storeId ?? null,
+          error: {
+            code: error.code,
+            message: error.message,
+            details: error.details,
+          },
+        });
+        return;
+      }
+
+      next(error);
+    }
   };
 
   void execute().catch(next);

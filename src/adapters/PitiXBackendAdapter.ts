@@ -59,6 +59,13 @@ type BusinessResult = {
   } | null;
 };
 
+type BusinessPingResult = {
+  business: {
+    id: string;
+    name?: string | null;
+  } | null;
+};
+
 type SaleChannelsResult = {
   saleChannels: Array<{
     id: string;
@@ -191,6 +198,15 @@ const BUSINESS_QUERY = `
         type
         code
       }
+    }
+  }
+`;
+
+const BUSINESS_PING_QUERY = `
+  query BusinessPing($where: BusinessWhereUniqueInput!) {
+    business(where: $where) {
+      id
+      name
     }
   }
 `;
@@ -600,6 +616,32 @@ export class PitiXBackendAdapter {
     });
 
     return business;
+  }
+
+  async pingBusiness(session: PitiXSession, traceRequestId?: string): Promise<{ id: string; name?: string | null } | null> {
+    const result = await this.requestPos<BusinessPingResult>({
+      session,
+      query: BUSINESS_PING_QUERY,
+      variables: {
+        where: {
+          id: session.businessId,
+        },
+      },
+      requestId: traceRequestId,
+    });
+
+    logger.info("PitiX business ping completed", {
+      requestId: traceRequestId,
+      businessId: session.businessId,
+      found: Boolean(result.business),
+    });
+
+    return result.business
+      ? {
+          id: result.business.id,
+          name: result.business.name ?? null,
+        }
+      : null;
   }
 
   async getSaleChannels(session: PitiXSession, traceRequestId?: string): Promise<PitiXSaleChannel[]> {
