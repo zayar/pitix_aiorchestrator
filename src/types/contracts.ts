@@ -265,3 +265,70 @@ export type CreateSaleResponse = {
   };
   draft: ParsedSaleDraft;
 };
+
+export type SavedCartItemPayload = {
+  id: string;
+  name: string;
+  quantity: number;
+  unit_price: number;
+  total_amount: number;
+  stock_id?: string | null;
+  use_inventory?: boolean;
+};
+
+export type SavedVoiceCartDocument = {
+  id: string;
+  name: string;
+  notes?: string | null;
+  refName: string;
+  refId: string;
+  business_id: string;
+  store_id: string;
+  store_name?: string | null;
+  user_id: string;
+  user_name?: string | null;
+  sale_channel?: string | null;
+  currency_code: string;
+  transcript: string;
+  customer?: DraftMatchedCustomer | null;
+  cartItem: SavedCartItemPayload[];
+  items: DraftSaleItem[];
+  gross_amount: number;
+  discount_amount: number;
+  charge_amount: number;
+  net_amount: number;
+  total_amount: number;
+  tax_amount: number;
+  shipping_amount: number;
+  received_amount: number;
+  refund_amount: number;
+  total_quantity: number;
+  is_saved: true;
+  createdAt: string;
+  updatedAt: string;
+  draft: ParsedSaleDraft;
+};
+
+export type SavedCartListResponse = {
+  requestId: string;
+  carts: SavedVoiceCartDocument[];
+};
+
+export type SavedCartMutationResponse = {
+  requestId: string;
+  cart: SavedVoiceCartDocument;
+};
+
+export type SavedCartListRequestBody = {
+  businessId: string;
+  userId: string;
+  storeId?: string;
+  storeName?: string;
+  userName?: string;
+  refreshToken?: string;
+  saleChannel?: string | { name?: string | null };
+};
+
+export type SavedCartMutationRequestBody = SavedCartListRequestBody & {
+  cart: SavedVoiceCartDocument;
+};

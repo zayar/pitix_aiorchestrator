@@ -86,6 +86,9 @@ export const config = {
   vertexSttModel: getStringEnv("VERTEX_STT_MODEL", String(process.env.VERTEX_MODEL ?? "gemini-2.5-flash")),
   pitixAccountGraphqlUrl: getUrlEnv("PITIX_ACCOUNT_GRAPHQL_URL", "https://api-ext.pitix.app/account"),
   pitixPosGraphqlUrl: getUrlEnv("PITIX_POS_GRAPHQL_URL", "https://api-ext.pitix.app/pos"),
+  pitixFirestoreDb:
+    String(process.env.PITIX_FIRESTORE_DB ?? "").trim() ||
+    (String(process.env.NODE_ENV ?? "").trim().toLowerCase() === "production" ? "production" : "development"),
   pitixRequestTimeoutMs: getPositiveNumberEnv("PITIX_REQUEST_TIMEOUT_MS", 15000),
   pitixDebugLogs: getBooleanEnv("PITIX_DEBUG_LOGS", false),
   pitixDefaultSaleStatus:

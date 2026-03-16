@@ -2,6 +2,11 @@ import type { Response } from "express";
 import type {
   CatalogSnapshot,
   CreateSaleRequestBody,
+  SavedCartListRequestBody,
+  SavedCartListResponse,
+  SavedCartMutationRequestBody,
+  SavedCartMutationResponse,
+  SavedVoiceCartDocument,
   VoiceSaleProcessResponse,
   VoiceSaleRequestContext,
 } from "../types/contracts.js";
@@ -11,6 +16,7 @@ import { config } from "../config/index.js";
 import { createSpeechRecognitionService } from "../services/SpeechRecognitionService.js";
 import { createLlmSaleParserService } from "../services/LlmSaleParserService.js";
 import { PitiXBackendAdapter } from "../adapters/PitiXBackendAdapter.js";
+import { savedCartFirestoreService } from "../services/SavedCartFirestoreService.js";
 import { buildCatalogBiasPhrases } from "../utils/catalogBias.js";
 import { logger } from "../utils/logger.js";
 
@@ -459,5 +465,83 @@ export const handleCreate = async (req: RequestWithContext, res: Response) => {
   }
 
   const response = await pitixBackendAdapter.createSale(context, body);
+  res.json(response);
+};
+
+const ensureSavedCartAccess = async (context: VoiceSaleRequestContext) => {
+  if (!context.storeId) {
+    throw new AppError("storeId is required for saved carts.", {
+      statusCode: 400,
+      code: "missing_store_id",
+    });
+  }
+
+  await pitixBackendAdapter.pingBusiness(context, context.requestId);
+};
+
+export const handleSavedCartList = async (req: RequestWithContext, res: Response) => {
+  const context = buildVoiceContext(req);
+  await ensureSavedCartAccess(context);
+
+  const carts = await savedCartFirestoreService.list({
+    businessId: context.businessId,
+    storeId: context.storeId!,
+  });
+
+  const response: SavedCartListResponse = {
+    requestId: context.requestId,
+    carts,
+  };
+
+  res.json(response);
+};
+
+export const handleSavedCartCreate = async (req: RequestWithContext, res: Response) => {
+  const context = buildVoiceContext(req);
+  const body = req.body as SavedCartMutationRequestBody;
+  if (!body?.cart) {
+    throw new AppError("cart is required.", {
+      statusCode: 400,
+      code: "missing_cart",
+    });
+  }
+
+  await ensureSavedCartAccess(context);
+  const cart = await savedCartFirestoreService.createOrUpdate({
+    businessId: context.businessId,
+    storeId: context.storeId!,
+    cart: body.cart as SavedVoiceCartDocument,
+  });
+
+  const response: SavedCartMutationResponse = {
+    requestId: context.requestId,
+    cart,
+  };
+
+  res.json(response);
+};
+
+export const handleSavedCartUpdate = async (req: RequestWithContext, res: Response) => {
+  const context = buildVoiceContext(req);
+  const body = req.body as SavedCartMutationRequestBody;
+  if (!body?.cart) {
+    throw new AppError("cart is required.", {
+      statusCode: 400,
+      code: "missing_cart",
+    });
+  }
+
+  await ensureSavedCartAccess(context);
+  const cart = await savedCartFirestoreService.createOrUpdate({
+    businessId: context.businessId,
+    storeId: context.storeId!,
+    cart: body.cart as SavedVoiceCartDocument,
+  });
+
+  const response: SavedCartMutationResponse = {
+    requestId: context.requestId,
+    cart,
+  };
+
   res.json(response);
 };
