@@ -1057,6 +1057,7 @@ export class PitiXBackendAdapter {
       requestId: context.requestId,
     });
     const saleStatus = body.saleOptions?.saleStatus ?? "COMPLETED";
+    const isDraftSale = saleStatus === "PENDING";
     const saleChannelName = toTrimmedString(body.saleChannel?.name) ?? context.saleChannel?.name ?? "AI Sales Assistant";
     const sellerName = toTrimmedString(context.userName) ?? body.userId;
     const diningOption = body.saleOptions?.diningOption || "TakeAway";
@@ -1076,6 +1077,8 @@ export class PitiXBackendAdapter {
       paymentMethodSource: resolvedPaymentMethod.source,
       diningOption,
       receivedAmount,
+      paymentStatus: isDraftSale ? "UNPAID" : "PAID",
+      operationStatus: isDraftSale ? "None" : "Request",
     });
 
     const data = {
@@ -1091,7 +1094,8 @@ export class PitiXBackendAdapter {
       sale_channel: saleChannelName,
       sale_date: new Date(),
       sale_number: generateShortNumber(),
-      operation_status: "Request",
+      operation_status: isDraftSale ? "None" : "Request",
+      payment_status: isDraftSale ? "UNPAID" : undefined,
       sale_status: saleStatus,
       seller_id: body.userId,
       seller_name: sellerName,
