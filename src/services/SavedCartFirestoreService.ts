@@ -34,22 +34,51 @@ const normalizeCart = (value: SavedVoiceCartDocument): SavedVoiceCartDocument =>
 });
 
 const buildCollectionPath = (businessId: string, storeId: string): string =>
+  `/save_carts/${businessId}/stores/${storeId}/carts`;
+
+const buildLegacyCollectionPath = (businessId: string, storeId: string): string =>
   `save_carts/${businessId}/stores/${storeId}/carts`;
 
 export const savedCartFirestoreService = {
   buildCollectionPath,
 
   async list(params: { businessId: string; storeId: string }): Promise<SavedVoiceCartDocument[]> {
-    const snapshot = await getDb()
-      .collection(buildCollectionPath(params.businessId, params.storeId))
-      .orderBy("updatedAt", "desc")
-      .limit(100)
-      .get();
+    const collectionPaths = Array.from(
+      new Set([
+        buildCollectionPath(params.businessId, params.storeId),
+        buildLegacyCollectionPath(params.businessId, params.storeId),
+      ]),
+    );
 
-    return snapshot.docs
-      .map((doc) => ({ ...doc.data(), id: doc.id }) as SavedVoiceCartDocument)
-      .filter((cart) => cart && typeof cart === "object" && String(cart.id || "").trim())
-      .map((cart) => normalizeCart(cart));
+    const snapshots = await Promise.all(
+      collectionPaths.map((collectionPath) =>
+        getDb().collection(collectionPath).orderBy("updatedAt", "desc").limit(100).get(),
+      ),
+    );
+
+    const merged = new Map<string, SavedVoiceCartDocument>();
+    for (const snapshot of snapshots) {
+      for (const doc of snapshot.docs) {
+        const cart = { ...doc.data(), id: doc.id } as SavedVoiceCartDocument;
+        if (!cart || typeof cart !== "object" || !String(cart.id || "").trim()) {
+          continue;
+        }
+        const normalized = normalizeCart(cart);
+        const existing = merged.get(normalized.id);
+        if (!existing) {
+          merged.set(normalized.id, normalized);
+          continue;
+        }
+
+        if (new Date(normalized.updatedAt).valueOf() >= new Date(existing.updatedAt).valueOf()) {
+          merged.set(normalized.id, normalized);
+        }
+      }
+    }
+
+    return Array.from(merged.values()).sort(
+      (left, right) => new Date(right.updatedAt).valueOf() - new Date(left.updatedAt).valueOf(),
+    );
   },
 
   async createOrUpdate(params: {
