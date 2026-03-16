@@ -143,8 +143,8 @@ type CustomersResult = {
     phone?: string | null;
     email?: string | null;
     active?: boolean | null;
-    created_at?: string | null;
-    updated_at?: string | null;
+    createdAt?: string | null;
+    updatedAt?: string | null;
   }>;
 };
 
@@ -303,8 +303,8 @@ const CUSTOMERS_QUERY = `
       phone
       email
       active
-      created_at
-      updated_at
+      createdAt
+      updatedAt
     }
   }
 `;
@@ -867,8 +867,8 @@ export class PitiXBackendAdapter {
       identifier: customer.identifier ?? null,
       phone: customer.phone ?? null,
       email: customer.email ?? null,
-      createdAt: customer.created_at ?? null,
-      updatedAt: customer.updated_at ?? null,
+      createdAt: customer.createdAt ?? null,
+      updatedAt: customer.updatedAt ?? null,
     }));
 
     logger.info("PitiX customers fetched", {
