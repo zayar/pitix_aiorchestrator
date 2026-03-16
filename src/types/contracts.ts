@@ -116,6 +116,13 @@ export type CatalogCustomer = {
   identifier?: string | null;
   phone?: string | null;
   email?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  branchName?: string | null;
+  companyName?: string | null;
+  lastVisitAt?: string | null;
+  purchaseCount?: number | null;
+  totalSpend?: number | null;
 };
 
 export type CatalogProduct = {
@@ -139,8 +146,44 @@ export type DraftMatchedCustomer = {
   id: string;
   name: string;
   identifier?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
   confidence: number;
   matchedText?: string | null;
+};
+
+export type CustomerMatchState =
+  | "exact_unique_match"
+  | "duplicate_name_match"
+  | "suggested_match_only"
+  | "no_match";
+
+export type CustomerMatchCandidate = {
+  id: string;
+  name: string;
+  identifier?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  branchName?: string | null;
+  companyName?: string | null;
+  lastVisitAt?: string | null;
+  purchaseCount?: number | null;
+  totalSpend?: number | null;
+  confidence?: number | null;
+  matchReason?: string | null;
+};
+
+export type CustomerMatchInfo = {
+  state: CustomerMatchState;
+  spokenName?: string | null;
+  helperText?: string | null;
+  confidence?: number | null;
+  suggestedMatches: CustomerMatchCandidate[];
+  allMatches: CustomerMatchCandidate[];
 };
 
 export type DraftMatchedProduct = {
@@ -166,6 +209,7 @@ export type DraftSaleItem = {
 export type ParsedSaleDraft = {
   transcript: string;
   customer: DraftMatchedCustomer | null;
+  customerMatch: CustomerMatchInfo;
   items: DraftSaleItem[];
   subtotal: number;
   currencyCode: string;

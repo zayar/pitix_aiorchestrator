@@ -2,6 +2,8 @@ import { VertexAI } from "@google-cloud/vertexai";
 import { config } from "../config/index.js";
 import type {
   CatalogSnapshot,
+  CustomerMatchCandidate,
+  CustomerMatchInfo,
   DraftMatchedCustomer,
   DraftMatchedProduct,
   DraftSaleItem,
@@ -9,7 +11,11 @@ import type {
 } from "../types/contracts.js";
 import { logger } from "../utils/logger.js";
 import { parseJsonObject } from "../utils/json.js";
-import { findBestEntityMatchByName } from "../utils/matching.js";
+import {
+  findBestEntityMatchByName,
+  normalizeNameForMatching,
+  rankEntityMatchesByName,
+} from "../utils/matching.js";
 import {
   extractCustomerHint,
   extractVoiceLineCandidates,
@@ -46,30 +52,212 @@ const CUSTOMER_PREFIX_MARKERS = new Set(["customer", "ဖောက်သည်",
 const CUSTOMER_SUFFIX_MARKERS = new Set(["for", "to"]);
 const MYANMAR_FOR_MARKER = "အတွက်";
 
-const buildMatchedCustomer = (
-  customerName: string,
-  customers: CatalogSnapshot["customers"],
-): DraftMatchedCustomer | null => {
-  const match = findBestEntityMatchByName(customerName, customers);
-  if (!match.match || match.ambiguous) return null;
-  return {
-    id: match.match.id,
-    name: match.match.name,
-    identifier: match.match.identifier ?? null,
-    confidence: clampConfidence(match.confidence),
-    matchedText: customerName,
-  };
+const toTimeScore = (value?: string | null): number => {
+  const time = Date.parse(String(value ?? "").trim());
+  if (!Number.isFinite(time) || time <= 0) {
+    return 0;
+  }
+  return time;
 };
 
-const buildCustomerSuggestions = (
+const toCustomerCandidate = (
+  customer: CatalogSnapshot["customers"][number],
+  confidence?: number,
+  matchReason?: string,
+): CustomerMatchCandidate => ({
+  id: customer.id,
+  name: customer.name,
+  identifier: customer.identifier ?? null,
+  phone: customer.phone ?? null,
+  email: customer.email ?? null,
+  createdAt: customer.createdAt ?? null,
+  updatedAt: customer.updatedAt ?? null,
+  branchName: customer.branchName ?? null,
+  companyName: customer.companyName ?? null,
+  lastVisitAt: customer.lastVisitAt ?? null,
+  purchaseCount: customer.purchaseCount ?? null,
+  totalSpend: customer.totalSpend ?? null,
+  confidence: confidence ?? null,
+  matchReason: matchReason ?? null,
+});
+
+const toMatchedCustomer = (
+  customer: CatalogSnapshot["customers"][number],
+  matchedText: string,
+  confidence: number,
+): DraftMatchedCustomer => ({
+  id: customer.id,
+  name: customer.name,
+  identifier: customer.identifier ?? null,
+  phone: customer.phone ?? null,
+  email: customer.email ?? null,
+  createdAt: customer.createdAt ?? null,
+  updatedAt: customer.updatedAt ?? null,
+  confidence: clampConfidence(confidence),
+  matchedText,
+});
+
+const getCustomerSignal = (customer: CatalogSnapshot["customers"][number], spokenName: string): number => {
+  const normalizedSpoken = normalizeVoiceText(spokenName).replace(/\D/g, "");
+  const phoneDigits = normalizeVoiceText(String(customer.phone ?? "")).replace(/\D/g, "");
+  const identifier = normalizeNameForMatching(String(customer.identifier ?? ""));
+  const normalizedName = normalizeNameForMatching(customer.name);
+  const normalizedSpokenName = normalizeNameForMatching(spokenName);
+
+  let score = 0;
+  if (normalizedName && normalizedSpokenName && normalizedName === normalizedSpokenName) {
+    score += 1;
+  }
+  if (normalizedSpoken && phoneDigits && phoneDigits.includes(normalizedSpoken)) {
+    score += 0.35;
+  }
+  if (identifier && normalizeNameForMatching(spokenName).includes(identifier)) {
+    score += 0.22;
+  }
+  if (customer.totalSpend) {
+    score += Math.min(Number(customer.totalSpend) / 1000000, 0.08);
+  }
+  if (customer.purchaseCount) {
+    score += Math.min(Number(customer.purchaseCount) / 100, 0.05);
+  }
+  if (customer.lastVisitAt || customer.updatedAt) {
+    score += 0.04;
+  }
+  if (customer.createdAt) {
+    score += 0.02;
+  }
+  return score;
+};
+
+const rankCustomerCandidates = (
+  spokenName: string,
+  customers: CatalogSnapshot["customers"],
+): Array<{ customer: CatalogSnapshot["customers"][number]; score: number; exactNormalizedMatch: boolean; matchReason: string }> => {
+  const ranked = rankEntityMatchesByName(spokenName, customers);
+  return ranked
+    .map((entry) => {
+      const signalBoost = getCustomerSignal(entry.entity, spokenName);
+      const score = clampConfidence(entry.score + signalBoost * 0.1);
+      const matchReason = entry.exactNormalizedMatch
+        ? "Same customer name"
+        : entry.entity.phone && normalizeVoiceText(spokenName).replace(/\D/g, "")
+            && normalizeVoiceText(String(entry.entity.phone)).replace(/\D/g, "").includes(normalizeVoiceText(spokenName).replace(/\D/g, ""))
+          ? "Phone matches spoken detail"
+          : entry.entity.identifier && normalizeNameForMatching(spokenName).includes(normalizeNameForMatching(String(entry.entity.identifier)))
+            ? "Member code matches spoken detail"
+            : "Similar customer name";
+
+      return {
+        customer: entry.entity,
+        score,
+        exactNormalizedMatch: entry.exactNormalizedMatch,
+        matchReason,
+      };
+    })
+    .sort((left, right) => {
+      if (right.score !== left.score) {
+        return right.score - left.score;
+      }
+
+      const rightRecent = Math.max(
+        toTimeScore(right.customer.lastVisitAt),
+        toTimeScore(right.customer.updatedAt),
+        toTimeScore(right.customer.createdAt),
+      );
+      const leftRecent = Math.max(
+        toTimeScore(left.customer.lastVisitAt),
+        toTimeScore(left.customer.updatedAt),
+        toTimeScore(left.customer.createdAt),
+      );
+      return rightRecent - leftRecent;
+    });
+};
+
+const buildCustomerMatchInfo = (
   customerName: string,
   customers: CatalogSnapshot["customers"],
-): string[] => {
-  const match = findBestEntityMatchByName(customerName, customers);
-  if (match.match && !match.ambiguous) {
-    return [];
+): { customer: DraftMatchedCustomer | null; customerMatch: CustomerMatchInfo } => {
+  const spokenName = String(customerName ?? "").trim();
+  if (!spokenName) {
+    return {
+      customer: null,
+      customerMatch: {
+        state: "no_match",
+        spokenName: null,
+        helperText: "No customer selected",
+        confidence: null,
+        suggestedMatches: [],
+        allMatches: [],
+      },
+    };
   }
-  return uniqueNames(match.suggestions).slice(0, 3);
+
+  const normalizedSpokenName = normalizeNameForMatching(spokenName);
+  const exactMatches = customers.filter((customer) => normalizeNameForMatching(customer.name) === normalizedSpokenName);
+  const ranked = rankCustomerCandidates(spokenName, customers);
+
+  if (exactMatches.length === 1) {
+    const match = exactMatches[0];
+    return {
+      customer: toMatchedCustomer(match, spokenName, 1),
+      customerMatch: {
+        state: "exact_unique_match",
+        spokenName,
+        helperText: "Matched confidently",
+        confidence: 1,
+        suggestedMatches: [toCustomerCandidate(match, 1, "Same customer name")],
+        allMatches: [toCustomerCandidate(match, 1, "Same customer name")],
+      },
+    };
+  }
+
+  if (exactMatches.length > 1) {
+    const exactRanked = rankCustomerCandidates(spokenName, exactMatches).map((entry) =>
+      toCustomerCandidate(entry.customer, entry.score, entry.matchReason),
+    );
+    return {
+      customer: null,
+      customerMatch: {
+        state: "duplicate_name_match",
+        spokenName,
+        helperText: `Please choose the correct customer`,
+        confidence: exactRanked[0]?.confidence ?? null,
+        suggestedMatches: exactRanked.slice(0, 3),
+        allMatches: exactRanked,
+      },
+    };
+  }
+
+  const strongSuggestions = ranked
+    .filter((entry) => entry.score >= 0.58)
+    .slice(0, 5)
+    .map((entry) => toCustomerCandidate(entry.customer, entry.score, entry.matchReason));
+
+  if (strongSuggestions.length > 0) {
+    return {
+      customer: null,
+      customerMatch: {
+        state: "suggested_match_only",
+        spokenName,
+        helperText: "No exact customer selected",
+        confidence: strongSuggestions[0]?.confidence ?? null,
+        suggestedMatches: strongSuggestions,
+        allMatches: strongSuggestions,
+      },
+    };
+  }
+
+  return {
+    customer: null,
+    customerMatch: {
+      state: "no_match",
+      spokenName,
+      helperText: "No exact customer selected",
+      confidence: ranked[0]?.score ?? null,
+      suggestedMatches: [],
+      allMatches: [],
+    },
+  };
 };
 
 const splitNormalizedTokens = (value: string): string[] =>
@@ -90,16 +278,20 @@ const findCustomerRegionMatch = (
     const regionTokens =
       mode === "prefix" ? tokens.slice(0, count) : tokens.slice(tokens.length - count);
     const regionPhrase = regionTokens.join(" ");
-    const match = findBestEntityMatchByName(regionPhrase, customers);
-    if (!match.match || match.ambiguous || match.confidence < 0.64) {
+    const exactMatches = customers.filter(
+      (customer) => normalizeNameForMatching(customer.name) === normalizeNameForMatching(regionPhrase),
+    );
+    const ranked = rankCustomerCandidates(regionPhrase, customers);
+    const topScore = ranked[0]?.score ?? 0;
+    if (exactMatches.length === 0 && topScore < 0.64) {
       continue;
     }
 
-    if (!best || match.confidence > best.confidence || count > best.consumed) {
+    if (!best || topScore > best.confidence || count > best.consumed) {
       best = {
-        customerPhrase: match.match.name,
+        customerPhrase: regionPhrase,
         consumed: count,
-        confidence: match.confidence,
+        confidence: topScore || 1,
       };
     }
   }
@@ -327,9 +519,19 @@ const buildDraftFromPhrases = (params: {
   parserProvider: string;
   baseConfidence: number;
 }): ParsedSaleDraft => {
-  const customer = params.customerPhrase
-    ? buildMatchedCustomer(params.customerPhrase, params.catalog.customers)
-    : null;
+  const { customer, customerMatch } = params.customerPhrase
+    ? buildCustomerMatchInfo(params.customerPhrase, params.catalog.customers)
+    : {
+        customer: null,
+        customerMatch: {
+          state: "no_match" as const,
+          spokenName: null,
+          helperText: "No customer selected",
+          confidence: null,
+          suggestedMatches: [],
+          allMatches: [],
+        },
+      };
 
   const items = params.itemPhrases.map((entry) => {
     const product = buildMatchedProduct(entry.phrase, params.catalog.products);
@@ -341,14 +543,18 @@ const buildDraftFromPhrases = (params: {
     .map((item) => item.rawText);
   const subtotal = items.reduce((sum, item) => sum + item.lineTotal, 0);
   const warnings = items.flatMap((item) => item.warnings);
-  const customerSuggestions = !customer && params.customerPhrase
-    ? buildCustomerSuggestions(params.customerPhrase, params.catalog.customers)
-    : [];
   const productSuggestions = uniqueNames(
     unmatchedPhrases.flatMap((phrase) => buildProductSuggestions(phrase, params.catalog.products)),
   ).slice(0, 5);
 
-  if (!customer && params.customerPhrase) {
+  if (customerMatch.state === "duplicate_name_match" && customerMatch.spokenName) {
+    warnings.push(`Multiple customers found for "${customerMatch.spokenName}".`);
+  } else if (customerMatch.state === "suggested_match_only" && customerMatch.suggestedMatches.length > 0) {
+    warnings.push("Customer could not be matched confidently.");
+    warnings.push(
+      `Suggested customers: ${customerMatch.suggestedMatches.map((candidate) => candidate.name).join(", ")}`,
+    );
+  } else if (customerMatch.state === "no_match" && params.customerPhrase) {
     warnings.push("Customer could not be matched confidently.");
   }
   if (items.length === 0) {
@@ -356,9 +562,6 @@ const buildDraftFromPhrases = (params: {
   }
   if (unmatchedPhrases.length > 0) {
     warnings.push("Some item phrases need manual confirmation.");
-  }
-  if (!customer && customerSuggestions.length > 0) {
-    warnings.push(`Suggested customers: ${customerSuggestions.join(", ")}`);
   }
   if (unmatchedPhrases.length > 0 && productSuggestions.length > 0) {
     warnings.push(`Suggested products: ${productSuggestions.join(", ")}`);
@@ -400,6 +603,7 @@ const buildDraftFromPhrases = (params: {
   return {
     transcript: params.transcript,
     customer,
+    customerMatch,
     items,
     subtotal,
     currencyCode: params.catalog.currencyCode || "MMK",

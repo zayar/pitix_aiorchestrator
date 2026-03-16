@@ -92,7 +92,7 @@ const buildSimilarityScore = (target: string, candidate: string): number => {
   return Math.max(containsScore, tokenScore, editScore, phoneticScore);
 };
 
-const normalizeNameForMatching = (value: string): string =>
+export const normalizeNameForMatching = (value: string): string =>
   normalizeVoiceText(value)
     .replace(/\b(item|items|customer|sale|order|line|qty|quantity|add|take|pcs?|piece|pieces|ခု)\b/giu, " ")
     .replace(/\s+/g, " ")
@@ -141,6 +141,33 @@ export type EntityMatchResult<T> = {
   ambiguous: boolean;
 };
 
+export type RankedEntityMatch<T> = {
+  entity: T;
+  score: number;
+  exactNormalizedMatch: boolean;
+};
+
+export const rankEntityMatchesByName = <T extends { name: string }>(
+  rawTarget: string,
+  entities: T[],
+): RankedEntityMatch<T>[] => {
+  const target = normalizeNameForMatching(rawTarget);
+  if (!target || entities.length === 0) {
+    return [];
+  }
+
+  return entities
+    .map((entity) => {
+      const candidate = normalizeNameForMatching(entity.name);
+      return {
+        entity,
+        score: buildAliasAwareSimilarityScore(target, candidate),
+        exactNormalizedMatch: candidate === target,
+      };
+    })
+    .sort((left, right) => right.score - left.score);
+};
+
 export const findBestEntityMatchByName = <T extends { name: string }>(
   rawTarget: string,
   entities: T[],
@@ -150,16 +177,7 @@ export const findBestEntityMatchByName = <T extends { name: string }>(
     return { match: null, confidence: 0, suggestions: [], ambiguous: false };
   }
 
-  const scored = entities
-    .map((entity) => {
-      const candidate = normalizeNameForMatching(entity.name);
-      return {
-        entity,
-        score: buildAliasAwareSimilarityScore(target, candidate),
-      };
-    })
-    .sort((left, right) => right.score - left.score);
-
+  const scored = rankEntityMatchesByName(rawTarget, entities);
   const top = scored[0];
   const second = scored[1];
   const suggestions = scored
