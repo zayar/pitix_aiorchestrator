@@ -4,6 +4,7 @@ import { config } from "../config/index.js";
 import type { SavedVoiceCartDocument } from "../types/contracts.js";
 
 const FIREBASE_APP_NAME = "ai-orchestrator-pitix";
+const SAVED_CART_FIRESTORE_DB = "development";
 
 const getFirebaseApp = () => {
   const existing = getApps().find((app) => app.name === FIREBASE_APP_NAME);
@@ -20,7 +21,9 @@ const getFirebaseApp = () => {
   );
 };
 
-const getDb = () => getFirestore(getFirebaseApp(), config.pitixFirestoreDb);
+// Temporary alignment with the current POS environment:
+// saved carts must land in the same Firestore database that the POS app reads.
+const getDb = () => getFirestore(getFirebaseApp(), SAVED_CART_FIRESTORE_DB);
 
 const normalizeCart = (value: SavedVoiceCartDocument): SavedVoiceCartDocument => ({
   ...value,
