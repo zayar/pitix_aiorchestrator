@@ -4,7 +4,6 @@ import { config } from "../config/index.js";
 import type { SavedVoiceCartDocument } from "../types/contracts.js";
 
 const FIREBASE_APP_NAME = "ai-orchestrator-pitix";
-const SAVED_CART_FIRESTORE_DB = "development";
 
 const getFirebaseApp = () => {
   const existing = getApps().find((app) => app.name === FIREBASE_APP_NAME);
@@ -21,9 +20,10 @@ const getFirebaseApp = () => {
   );
 };
 
-// Temporary alignment with the current POS environment:
-// saved carts must land in the same Firestore database that the POS app reads.
-const getDb = () => getFirestore(getFirebaseApp(), SAVED_CART_FIRESTORE_DB);
+const normalizeFirestoreDb = (value?: string): "production" | "development" =>
+  String(value ?? "").trim().toLowerCase() === "development" ? "development" : "production";
+
+const getDb = (firestoreDb?: string) => getFirestore(getFirebaseApp(), normalizeFirestoreDb(firestoreDb || config.pitixFirestoreDb));
 
 const normalizeCart = (value: SavedVoiceCartDocument): SavedVoiceCartDocument => ({
   ...value,
@@ -45,7 +45,8 @@ const buildLegacyCollectionPath = (businessId: string, storeId: string): string 
 export const savedCartFirestoreService = {
   buildCollectionPath,
 
-  async list(params: { businessId: string; storeId: string }): Promise<SavedVoiceCartDocument[]> {
+  async list(params: { businessId: string; storeId: string; firestoreDb?: string }): Promise<SavedVoiceCartDocument[]> {
+    const firestoreDb = normalizeFirestoreDb(params.firestoreDb);
     const collectionPaths = Array.from(
       new Set([
         buildCollectionPath(params.businessId, params.storeId),
@@ -55,7 +56,7 @@ export const savedCartFirestoreService = {
 
     const snapshots = await Promise.all(
       collectionPaths.map((collectionPath) =>
-        getDb().collection(collectionPath).orderBy("updatedAt", "desc").limit(100).get(),
+        getDb(firestoreDb).collection(collectionPath).orderBy("updatedAt", "desc").limit(100).get(),
       ),
     );
 
@@ -88,10 +89,11 @@ export const savedCartFirestoreService = {
     businessId: string;
     storeId: string;
     cart: SavedVoiceCartDocument;
+    firestoreDb?: string;
   }): Promise<SavedVoiceCartDocument> {
     const collectionPath = buildCollectionPath(params.businessId, params.storeId);
     const normalizedCart = normalizeCart(params.cart);
-    const docRef = getDb().collection(collectionPath).doc(normalizedCart.id);
+    const docRef = getDb(params.firestoreDb).collection(collectionPath).doc(normalizedCart.id);
 
     await docRef.set(normalizedCart, { merge: true });
     return normalizedCart;

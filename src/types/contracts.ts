@@ -327,6 +327,7 @@ export type SavedCartListRequestBody = {
   userName?: string;
   refreshToken?: string;
   saleChannel?: string | { name?: string | null };
+  firestoreDb?: "production" | "development" | string;
 };
 
 export type SavedCartMutationRequestBody = SavedCartListRequestBody & {

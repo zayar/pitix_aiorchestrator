@@ -481,11 +481,13 @@ const ensureSavedCartAccess = async (context: VoiceSaleRequestContext) => {
 
 export const handleSavedCartList = async (req: RequestWithContext, res: Response) => {
   const context = buildVoiceContext(req);
+  const body = req.body as SavedCartListRequestBody;
   await ensureSavedCartAccess(context);
 
   const carts = await savedCartFirestoreService.list({
     businessId: context.businessId,
     storeId: context.storeId!,
+    firestoreDb: body?.firestoreDb,
   });
 
   const response: SavedCartListResponse = {
@@ -511,6 +513,7 @@ export const handleSavedCartCreate = async (req: RequestWithContext, res: Respon
     businessId: context.businessId,
     storeId: context.storeId!,
     cart: body.cart as SavedVoiceCartDocument,
+    firestoreDb: body?.firestoreDb,
   });
 
   const response: SavedCartMutationResponse = {
@@ -536,6 +539,7 @@ export const handleSavedCartUpdate = async (req: RequestWithContext, res: Respon
     businessId: context.businessId,
     storeId: context.storeId!,
     cart: body.cart as SavedVoiceCartDocument,
+    firestoreDb: body?.firestoreDb,
   });
 
   const response: SavedCartMutationResponse = {

@@ -164,6 +164,11 @@ type ReceivedPaymentWithBulkResult = {
   receivedPaymentWithBulk: number | null;
 };
 
+type CatalogCacheEntry = {
+  snapshot: CatalogSnapshot;
+  cachedAt: number;
+};
+
 const VERIFY_OTA_MUTATION = `
   mutation VerifyOTA($requestId: String!) {
     verifyOTA(requestId: $requestId) {
@@ -358,6 +363,12 @@ const toTrimmedString = (value: unknown): string | undefined => {
   const trimmed = String(value ?? "").trim();
   return trimmed || undefined;
 };
+
+const CATALOG_CACHE_TTL_MS = 5 * 60 * 1000;
+const catalogSnapshotCache = new Map<string, CatalogCacheEntry>();
+
+const getCatalogCacheKey = (context: VoiceSaleRequestContext): string =>
+  `${context.businessId}:${context.storeId || "default"}`;
 
 const getAppErrorDetails = (value: unknown): Record<string, unknown> =>
   typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
@@ -881,39 +892,73 @@ export class PitiXBackendAdapter {
   }
 
   async fetchCatalog(context: VoiceSaleRequestContext): Promise<CatalogSnapshot> {
-    const [business, saleChannels, products, customers] = await Promise.all([
-      this.getBusiness(context, context.requestId),
-      this.getSaleChannels(context, context.requestId),
-      this.getProducts(
-        context,
-        {
-          take: 200,
-          activeOnly: true,
-          storeId: context.storeId,
-        },
-        context.requestId,
-      ),
-      this.getCustomers(context, context.requestId),
-    ]);
+    const cacheKey = getCatalogCacheKey(context);
+    const cached = catalogSnapshotCache.get(cacheKey);
+    if (cached && Date.now() - cached.cachedAt < CATALOG_CACHE_TTL_MS) {
+      logger.info("PitiX catalog snapshot cache hit", {
+        requestId: context.requestId,
+        businessId: context.businessId,
+        storeId: context.storeId ?? null,
+        ageMs: Date.now() - cached.cachedAt,
+      });
+      return cached.snapshot;
+    }
 
-    const preferredStoreId = context.storeId ?? business?.defaultStoreId ?? undefined;
+    try {
+      const [business, saleChannels, products, customers] = await Promise.all([
+        this.getBusiness(context, context.requestId),
+        this.getSaleChannels(context, context.requestId),
+        this.getProducts(
+          context,
+          {
+            take: 200,
+            activeOnly: true,
+            storeId: context.storeId,
+          },
+          context.requestId,
+        ),
+        this.getCustomers(context, context.requestId),
+      ]);
 
-    logger.info("PitiX catalog snapshot prepared", {
-      requestId: context.requestId,
-      businessId: context.businessId,
-      preferredStoreId,
-      saleChannelCount: saleChannels.length,
-      productCount: products.length,
-      customerCount: customers.length,
-    });
+      const preferredStoreId = context.storeId ?? business?.defaultStoreId ?? undefined;
 
-    return {
-      currencyCode: business?.currencyCode || "MMK",
-      defaultStoreId: business?.defaultStoreId ?? null,
-      saleChannels,
-      customers,
-      products: products.map((product) => toCatalogProduct(product, preferredStoreId)),
-    };
+      logger.info("PitiX catalog snapshot prepared", {
+        requestId: context.requestId,
+        businessId: context.businessId,
+        preferredStoreId,
+        saleChannelCount: saleChannels.length,
+        productCount: products.length,
+        customerCount: customers.length,
+      });
+
+      const snapshot = {
+        currencyCode: business?.currencyCode || "MMK",
+        defaultStoreId: business?.defaultStoreId ?? null,
+        saleChannels,
+        customers,
+        products: products.map((product) => toCatalogProduct(product, preferredStoreId)),
+      };
+
+      catalogSnapshotCache.set(cacheKey, {
+        snapshot,
+        cachedAt: Date.now(),
+      });
+
+      return snapshot;
+    } catch (error) {
+      if (cached) {
+        logger.warn("PitiX catalog live fetch failed, using cached snapshot", {
+          requestId: context.requestId,
+          businessId: context.businessId,
+          storeId: context.storeId ?? null,
+          error: error instanceof Error ? error.message : String(error),
+          cachedAgeMs: Date.now() - cached.cachedAt,
+        });
+        return cached.snapshot;
+      }
+
+      throw error;
+    }
   }
 
   private async resolvePaymentMethodForCreate(params: {
