@@ -379,6 +379,34 @@ const getCatalogCacheKey = (context: VoiceSaleRequestContext): string =>
 const getAppErrorDetails = (value: unknown): Record<string, unknown> =>
   typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
 
+const isPitixAuthGraphqlError = (error: unknown): boolean => {
+  if (!isAppError(error)) {
+    return false;
+  }
+
+  if (error.code === "pitix_backend_http_error") {
+    const details = getAppErrorDetails(error.details);
+    return Number(details.httpStatus ?? 0) === 401;
+  }
+
+  if (error.code !== "pitix_graphql_error") {
+    return false;
+  }
+
+  const details = getAppErrorDetails(error.details);
+  const graphqlErrors = Array.isArray(details.errors) ? details.errors : [];
+  const combinedMessage = [
+    error.message,
+    ...graphqlErrors.map((item) =>
+      typeof item === "object" && item !== null ? String((item as { message?: unknown }).message ?? "") : "",
+    ),
+  ]
+    .join(" ")
+    .trim();
+
+  return /invalid or expired token|unauthorized|jwt|authentication/i.test(combinedMessage);
+};
+
 const normalizeForLookup = (value: unknown): string =>
   String(value ?? "")
     .trim()
@@ -649,18 +677,16 @@ export class PitiXBackendAdapter {
         requestId: params.requestId,
       });
     } catch (error) {
-      const details = getAppErrorDetails(isAppError(error) ? error.details : undefined);
-      const httpStatus = Number(details.httpStatus ?? 0);
       const shouldRetry =
         (params.retryOnUnauthorized ?? true) &&
-        isAppError(error) &&
-        error.code === "pitix_backend_http_error" &&
-        httpStatus === 401 &&
+        isPitixAuthGraphqlError(error) &&
         Boolean(params.session.refreshToken);
 
       if (!shouldRetry) {
         throw error;
       }
+
+      const details = getAppErrorDetails(isAppError(error) ? error.details : undefined);
 
       logger.warn("PitiX POS request returned 401, attempting token refresh", {
         requestId: params.requestId,
