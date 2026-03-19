@@ -464,6 +464,16 @@ export const handleCreate = async (req: RequestWithContext, res: Response) => {
     throw new AppError("draft is required.", { statusCode: 400, code: "missing_draft" });
   }
 
+  logger.info("Voice sale create requested", {
+    requestId: context.requestId,
+    businessId: context.businessId,
+    userId: context.userId,
+    storeId: context.storeId ?? null,
+    itemCount: Array.isArray(body.draft.items) ? body.draft.items.length : 0,
+    saleStatus: String(body.saleOptions?.saleStatus ?? "").trim() || "COMPLETED",
+    hasRefreshToken: Boolean(context.refreshToken),
+  });
+
   const response = await pitixBackendAdapter.createSale(context, body);
   res.json(response);
 };

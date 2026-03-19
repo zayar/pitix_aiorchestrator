@@ -34,8 +34,26 @@ const getPositiveNumberEnv = (key: string, fallback: number): number => {
   return value;
 };
 
+const normalizePitixGraphqlUrl = (key: string, value: string): string => {
+  if (!/^PITIX_(ACCOUNT|POS)_GRAPHQL_URL$/i.test(key)) {
+    return value;
+  }
+
+  try {
+    const parsed = new URL(value);
+    if (parsed.hostname === "api.pitix.app") {
+      parsed.hostname = "api-ext.pitix.app";
+      return parsed.toString().replace(/\/+$/, "");
+    }
+  } catch (_error) {
+    // Validation happens in getUrlEnv.
+  }
+
+  return value;
+};
+
 const getUrlEnv = (key: string, fallback: string): string => {
-  const value = getStringEnv(key, fallback);
+  const value = normalizePitixGraphqlUrl(key, getStringEnv(key, fallback));
   try {
     new URL(value);
   } catch (_error) {

@@ -19,7 +19,7 @@ import type {
 } from "../types/contracts.js";
 import { AppError, isAppError } from "../utils/errors.js";
 import { logger } from "../utils/logger.js";
-import { pitixGraphqlRequest } from "../utils/pitixGraphql.js";
+import { extractGraphqlOperationName, pitixGraphqlRequest } from "../utils/pitixGraphql.js";
 
 type VerifyOtaResult = {
   verifyOTA: {
@@ -372,6 +372,14 @@ const toTrimmedString = (value: unknown): string | undefined => {
 
 const CATALOG_CACHE_TTL_MS = 5 * 60 * 1000;
 const catalogSnapshotCache = new Map<string, CatalogCacheEntry>();
+const ACCOUNT_ENDPOINT_FALLBACKS = [
+  "https://api-ext.pitix.app/account",
+  "https://api-pos.pitix.app/account",
+];
+const POS_ENDPOINT_FALLBACKS = [
+  "https://api-ext.pitix.app/pos",
+  "https://api-pos.pitix.app/pos",
+];
 
 const getCatalogCacheKey = (context: VoiceSaleRequestContext): string =>
   `${context.businessId}:${context.storeId || "default"}`;
@@ -405,6 +413,18 @@ const isPitixAuthGraphqlError = (error: unknown): boolean => {
     .trim();
 
   return /invalid or expired token|unauthorized|jwt|authentication/i.test(combinedMessage);
+};
+
+const shouldTryEndpointFallback = (error: unknown): boolean => {
+  if (!isAppError(error)) {
+    return false;
+  }
+
+  if (isPitixAuthGraphqlError(error)) {
+    return true;
+  }
+
+  return error.code === "pitix_backend_network_error" || error.code === "pitix_backend_timeout";
 };
 
 const normalizeForLookup = (value: unknown): string =>
@@ -565,6 +585,16 @@ const mapVerifyOtaSession = (payload: unknown, token: string, refreshToken?: str
 export class PitiXBackendAdapter {
   private readonly refreshedSessionCache = new Map<string, RefreshedSessionEntry>();
   private readonly inFlightSessionRefreshes = new Map<string, Promise<RefreshedSessionEntry>>();
+  private preferredAccountEndpoint: string | null = null;
+  private preferredPosEndpoint: string | null = null;
+
+  private getEndpointCandidates(primary: string, preferred: string | null, fallbacks: string[]): string[] {
+    return Array.from(
+      new Set(
+        [preferred, primary, ...fallbacks].filter((value): value is string => Boolean(String(value ?? "").trim())),
+      ),
+    );
+  }
 
   private getSessionRefreshKey(session: PitiXSession): string {
     return `${session.businessId}:${session.userId}:${session.storeId || "default"}`;
@@ -653,12 +683,49 @@ export class PitiXBackendAdapter {
     variables?: Record<string, unknown>;
     requestId?: string;
   }): Promise<TData> {
-    return pitixGraphqlRequest<TData>({
-      endpoint: config.pitixAccountGraphqlUrl,
-      query: params.query,
-      variables: params.variables,
-      requestId: params.requestId,
-    });
+    const endpoints = this.getEndpointCandidates(
+      config.pitixAccountGraphqlUrl,
+      this.preferredAccountEndpoint,
+      ACCOUNT_ENDPOINT_FALLBACKS,
+    );
+
+    let lastError: unknown = null;
+    for (let index = 0; index < endpoints.length; index += 1) {
+      const endpoint = endpoints[index];
+      try {
+        const data = await pitixGraphqlRequest<TData>({
+          endpoint,
+          query: params.query,
+          variables: params.variables,
+          requestId: params.requestId,
+        });
+        if (this.preferredAccountEndpoint !== endpoint) {
+          logger.info("PitiX account endpoint selected", {
+            requestId: params.requestId,
+            endpoint,
+            operationName: extractGraphqlOperationName(params.query),
+          });
+        }
+        this.preferredAccountEndpoint = endpoint;
+        return data;
+      } catch (error) {
+        lastError = error;
+        const hasMoreCandidates = index < endpoints.length - 1;
+        if (!hasMoreCandidates || !shouldTryEndpointFallback(error)) {
+          throw error;
+        }
+
+        logger.warn("PitiX account endpoint failed, trying fallback", {
+          requestId: params.requestId,
+          endpoint,
+          nextEndpoint: endpoints[index + 1],
+          operationName: extractGraphqlOperationName(params.query),
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    throw (lastError instanceof Error ? lastError : new Error("PitiX account request failed."));
   }
 
   private async requestPos<TData>(params: {
@@ -668,52 +735,89 @@ export class PitiXBackendAdapter {
     requestId?: string;
     retryOnUnauthorized?: boolean;
   }): Promise<TData> {
-    try {
-      return await pitixGraphqlRequest<TData>({
-        endpoint: config.pitixPosGraphqlUrl,
-        query: params.query,
-        variables: params.variables,
-        headers: buildPosHeaders(params.session),
-        requestId: params.requestId,
-      });
-    } catch (error) {
-      const shouldRetry =
-        (params.retryOnUnauthorized ?? true) &&
-        isPitixAuthGraphqlError(error) &&
-        Boolean(params.session.refreshToken);
+    const endpoints = this.getEndpointCandidates(
+      config.pitixPosGraphqlUrl,
+      this.preferredPosEndpoint,
+      POS_ENDPOINT_FALLBACKS,
+    );
 
-      if (!shouldRetry) {
-        throw error;
+    let lastError: unknown = null;
+    for (let index = 0; index < endpoints.length; index += 1) {
+      const endpoint = endpoints[index];
+      try {
+        const data = await pitixGraphqlRequest<TData>({
+          endpoint,
+          query: params.query,
+          variables: params.variables,
+          headers: buildPosHeaders(params.session),
+          requestId: params.requestId,
+        });
+
+        if (this.preferredPosEndpoint !== endpoint) {
+          logger.info("PitiX POS endpoint selected", {
+            requestId: params.requestId,
+            endpoint,
+            operationName: extractGraphqlOperationName(params.query),
+          });
+        }
+        this.preferredPosEndpoint = endpoint;
+        return data;
+      } catch (error) {
+        lastError = error;
+        const hasMoreCandidates = index < endpoints.length - 1;
+
+        if (hasMoreCandidates && shouldTryEndpointFallback(error)) {
+          logger.warn("PitiX POS endpoint failed, trying fallback", {
+            requestId: params.requestId,
+            endpoint,
+            nextEndpoint: endpoints[index + 1],
+            operationName: extractGraphqlOperationName(params.query),
+            error: error instanceof Error ? error.message : String(error),
+          });
+          continue;
+        }
+
+        const shouldRetry =
+          (params.retryOnUnauthorized ?? true) &&
+          isPitixAuthGraphqlError(error) &&
+          Boolean(params.session.refreshToken);
+
+        if (!shouldRetry) {
+          throw error;
+        }
+
+        const details = getAppErrorDetails(isAppError(error) ? error.details : undefined);
+
+        logger.warn("PitiX POS request returned auth failure, attempting token refresh", {
+          requestId: params.requestId,
+          operationName: details.operationName ?? extractGraphqlOperationName(params.query),
+          endpoint,
+          businessId: params.session.businessId,
+          userId: params.session.userId,
+          storeId: params.session.storeId,
+          hasRefreshToken: Boolean(params.session.refreshToken),
+        });
+
+        await this.refreshSessionSingleFlight(params.session, {
+          requestId: params.requestId,
+          operationName: details.operationName ?? extractGraphqlOperationName(params.query),
+        });
+
+        logger.info("PitiX POS token refresh succeeded, retrying request", {
+          requestId: params.requestId,
+          operationName: details.operationName ?? extractGraphqlOperationName(params.query),
+          businessId: params.session.businessId,
+          userId: params.session.userId,
+        });
+
+        return this.requestPos<TData>({
+          ...params,
+          retryOnUnauthorized: false,
+        });
       }
-
-      const details = getAppErrorDetails(isAppError(error) ? error.details : undefined);
-
-      logger.warn("PitiX POS request returned 401, attempting token refresh", {
-        requestId: params.requestId,
-        operationName: details.operationName,
-        businessId: params.session.businessId,
-        userId: params.session.userId,
-        storeId: params.session.storeId,
-        hasRefreshToken: Boolean(params.session.refreshToken),
-      });
-
-      await this.refreshSessionSingleFlight(params.session, {
-        requestId: params.requestId,
-        operationName: details.operationName,
-      });
-
-      logger.info("PitiX POS token refresh succeeded, retrying request", {
-        requestId: params.requestId,
-        operationName: details.operationName,
-        businessId: params.session.businessId,
-        userId: params.session.userId,
-      });
-
-      return this.requestPos<TData>({
-        ...params,
-        retryOnUnauthorized: false,
-      });
     }
+
+    throw (lastError instanceof Error ? lastError : new Error("PitiX POS request failed."));
   }
 
   async verifyOTA(requestId: string, traceRequestId?: string): Promise<PitiXAccountAuthResult> {
