@@ -169,6 +169,12 @@ type CatalogCacheEntry = {
   cachedAt: number;
 };
 
+type RefreshedSessionEntry = {
+  token: string;
+  refreshToken?: string;
+  refreshedAt: number;
+};
+
 const VERIFY_OTA_MUTATION = `
   mutation VerifyOTA($requestId: String!) {
     verifyOTA(requestId: $requestId) {
@@ -529,6 +535,91 @@ const mapVerifyOtaSession = (payload: unknown, token: string, refreshToken?: str
 };
 
 export class PitiXBackendAdapter {
+  private readonly refreshedSessionCache = new Map<string, RefreshedSessionEntry>();
+  private readonly inFlightSessionRefreshes = new Map<string, Promise<RefreshedSessionEntry>>();
+
+  private getSessionRefreshKey(session: PitiXSession): string {
+    return `${session.businessId}:${session.userId}:${session.storeId || "default"}`;
+  }
+
+  private applyRefreshedSession(session: PitiXSession, refreshed: RefreshedSessionEntry): void {
+    session.token = refreshed.token;
+    session.refreshToken = refreshed.refreshToken ?? session.refreshToken;
+  }
+
+  private async refreshSessionSingleFlight(
+    session: PitiXSession,
+    params: {
+      requestId?: string;
+      operationName?: unknown;
+    } = {},
+  ): Promise<void> {
+    if (!session.refreshToken) {
+      throw new AppError("PitiX refresh token is missing for this session.", {
+        statusCode: 401,
+        code: "missing_refresh_token",
+      });
+    }
+
+    const refreshKey = this.getSessionRefreshKey(session);
+    const currentToken = normalizeToken(session.token);
+    const currentRefreshToken = normalizeToken(session.refreshToken);
+    const cached = this.refreshedSessionCache.get(refreshKey);
+
+    if (
+      cached &&
+      ((normalizeToken(cached.token) && normalizeToken(cached.token) !== currentToken) ||
+        (normalizeToken(cached.refreshToken ?? "") && normalizeToken(cached.refreshToken ?? "") !== currentRefreshToken))
+    ) {
+      logger.info("Reusing recently refreshed PitiX session token", {
+        requestId: params.requestId,
+        operationName: params.operationName,
+        businessId: session.businessId,
+        userId: session.userId,
+        storeId: session.storeId,
+        refreshedAt: cached.refreshedAt,
+      });
+      this.applyRefreshedSession(session, cached);
+      return;
+    }
+
+    const existingRefresh = this.inFlightSessionRefreshes.get(refreshKey);
+    if (existingRefresh) {
+      logger.info("Awaiting in-flight PitiX session refresh", {
+        requestId: params.requestId,
+        operationName: params.operationName,
+        businessId: session.businessId,
+        userId: session.userId,
+        storeId: session.storeId,
+      });
+      const refreshed = await existingRefresh;
+      this.applyRefreshedSession(session, refreshed);
+      return;
+    }
+
+    const refreshPromise = (async (): Promise<RefreshedSessionEntry> => {
+      const refreshed = await this.refreshToken(String(session.refreshToken), params.requestId);
+      const nextSession: RefreshedSessionEntry = {
+        token: refreshed.token,
+        refreshToken: refreshed.refreshToken ?? session.refreshToken,
+        refreshedAt: Date.now(),
+      };
+      this.refreshedSessionCache.set(refreshKey, nextSession);
+      return nextSession;
+    })();
+
+    this.inFlightSessionRefreshes.set(refreshKey, refreshPromise);
+
+    try {
+      const refreshed = await refreshPromise;
+      this.applyRefreshedSession(session, refreshed);
+    } finally {
+      if (this.inFlightSessionRefreshes.get(refreshKey) === refreshPromise) {
+        this.inFlightSessionRefreshes.delete(refreshKey);
+      }
+    }
+  }
+
   private async requestAccount<TData>(params: {
     query: string;
     variables?: Record<string, unknown>;
@@ -580,9 +671,10 @@ export class PitiXBackendAdapter {
         hasRefreshToken: Boolean(params.session.refreshToken),
       });
 
-      const refreshed = await this.refreshToken(String(params.session.refreshToken), params.requestId);
-      params.session.token = refreshed.token;
-      params.session.refreshToken = refreshed.refreshToken ?? params.session.refreshToken;
+      await this.refreshSessionSingleFlight(params.session, {
+        requestId: params.requestId,
+        operationName: details.operationName,
+      });
 
       logger.info("PitiX POS token refresh succeeded, retrying request", {
         requestId: params.requestId,
